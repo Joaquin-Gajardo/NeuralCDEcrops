@@ -6,9 +6,10 @@ Versions:
 v1: 04.11.2020. Added F1 score, evaluate metrics functions, clearer output.
 v2: 06.11.2020. Added early stopping, modified architecture, L2 regularization, named experiments output, modified get data function to include clouds mask, added some helper functions.
 v3: 09.11.2020. Added argparse, modified early stopping conditions.
-v4: 11.09.2020. LR as an argument and LR decay, added wandb logger. 16.11.2020 lr decay as an option and improved save text file name format, added samples option. 18.11.2020 Added num workers. Changed eps to 10^-10. 20.11.2020. Added print missing values rate if clouds mask options in data.
-v5: 20.11.2020. Added experiment ID and save and load checkpoints. Added memory pinning. Using noskip datasets and return mask too in get_data function. Log gradients.
-v6: 06.12.2020. Modified data preprocessing and interpolation, added option for reduced dataset, times to use, interpolation method and save coeffs as dataset.
+v4: 11.09.2020. LR as an argument and LR decay, added wandb logger. 16.11.2020 lr decay as an option and improved save text file name format, added samples option. 18.11.2020 Added num workers. Changed eps to 10^-10. 20.11.2020. Added memory pinning.
+v5: 23.11.2020. Added histogram for gradients in wandb.
+v6: 07.12.2020. -Added experiment ID and save and load checkpoints. Using noskip datasets and return mask too in get_data function.
+                -Modified data preprocessing considerably and interpolation, added option for reduced dataset, times to use, interpolation method and save coeffs as dataset. Plot sample function, build interpolation path function.
 """
 
 # Import libraries
@@ -33,7 +34,6 @@ import cProfile
 
 # Check path
 here = pathlib.Path(__file__).resolve().parent
-project_folder_path = here.parent.parent # adjust with 'parent' depending on current directory.
 
 # Ignore warnings
 warnings.filterwarnings("ignore")
@@ -44,7 +44,6 @@ warnings.filterwarnings("ignore")
 def get_data(absolute_data_directory_path, use_noskip=True, reduced=False, ntrain=None, nval=None):
     # Read dataset
     noskip = 'noskip' if use_noskip else ''
-    
     times_dataset = h5py.File(os.path.join(absolute_data_directory_path, 'time.hdf5'), 'r')
     train_dataset = h5py.File(os.path.join(absolute_data_directory_path, f'train{noskip}.hdf5'), 'r')
     val_dataset = h5py.File(os.path.join(absolute_data_directory_path, f'eval{noskip}.hdf5'), 'r')
@@ -160,7 +159,7 @@ def get_interpolation_coeffs(directory, data, times, use_noskip, reduced, interp
     # Dataset name
     noskip = 'noskip' if use_noskip else ''
     red = 'red' if reduced else ''
-    timing = 'eqspaced' if times is None or interpolation_method == 'rectilinear' else 'irrspaced' # TODO: check if this works fine everytime
+    timing = 'eqspaced' if times is None or interpolation_method == 'rectilinear' else 'irrspaced' # quick naming fix. TODO: if another equally spaced time series timestamps is in times it wouldn't name it properly...
     coeffs_filename = f'{interpolation_method}_coeffs{noskip}{red}_{timing}.hdf5'
     absolute_coeffs_filename_path = os.path.join(directory, coeffs_filename)
     
@@ -227,18 +226,17 @@ def build_data_path(coeffs, times, interpolation_method):
 def plot_interpolation_path(coefficients, dataset, times, interpolation_method, n=None):
     print('Plotting interpolation of a sample for sanity check...')
     coeffs = coefficients[f'{dataset}_coeffs']
-
     if n is None or n > coeffs.size(0):
         n = np.random.randint(0, coeffs.size(0))
     coeffs = coeffs[n]
+
     X = build_data_path(coeffs, times, interpolation_method)[0]
     t = None if times == '' else times
-
     if interpolation_method == 'rectilinear':        
         t = X.grid_points # if it's rectifilear (or linear) the ode solver will evaluate at gridpoints anyway.
         print('t knots:', t, t.shape)
     elif interpolation_method == 'cubic' or interpolation_method == 'linear': # plot more points to see the true shape of them (discontinuities in dX for linear and the smoothness of cubic) 
-        t = np.linspace(0., X.interval[-1], 1001) 
+        t = np.linspace(0., X.interval[-1], 1001)
 
     print('t for plot:', t, t.shape)
     x = X.evaluate(t)
@@ -258,7 +256,7 @@ def plot_interpolation_path(coefficients, dataset, times, interpolation_method, 
         plt.axvline(time, linestyle='-.', alpha=0.5, linewidth=0.8, color='gray')
     plt.ylabel('dX/dt')
     fig.suptitle(f'{dataset.capitalize()} set sample {n}: {interpolation_method} data interpolation')
-    plt.show()
+    #plt.show()
     return fig
 
 # Classes for creating the Neural CDE system
@@ -295,7 +293,7 @@ class NeuralCDE(torch.nn.Module):
     def forward(self, coeffs, times, interpolation_method):
         X, cdeint_options = build_data_path(coeffs, times, interpolation_method)
         z0 = self.initial(X.evaluate(X.interval[0])) # initial hidden state must be a function of the first observation
-        z_t = torchcde.cdeint(X=X, z0=z0, func=self.vector_field, t=X.interval, options=cdeint_options) # t=times[[0, -1]] is the same
+        z_t = torchcde.cdeint(X=X, z0=z0, func=self.vector_field, t=X.interval, options=cdeint_options) # t=times[[0, -1]] is the same (but only when times is not None...)
 
         # Both z0 and z_T are returned from cdeint, extract just last value
         z_T = z_t[:, -1]
@@ -303,7 +301,7 @@ class NeuralCDE(torch.nn.Module):
         pred_y = torch.nn.functional.softmax(pred_y, dim=-1) # New. Added a soft-max to get soft assignments that work with the multi-class cross entropy loss function
         return pred_y
 
-def init_network_weights(net, std = 0.1): # From Nando
+def init_network_weights(net, std = 0.1): # From Nando. Not used, Pytorch default initialization of layers seems alright.
     for m in net.modules():
         if isinstance(m, torch.nn.Linear):
             torch.nn.init.normal_(m.weight, mean=0, std=std)
@@ -381,23 +379,23 @@ def parse_args():
     parser.add_argument("--reduced", default=False, action="store_true", help='Use only a fraction of the dataset features (for Crops dataset) [default=%(default)s].')
     parser.add_argument("--time-default", default=False, action="store_true", help='To not pass the original dataset timestamps to the interpolation and model and use the default equally spaced time array of torchde interpolation methods [default=%(default)s].')
     parser.add_argument("--interpol-method", type=str, default='cubic', choices=['cubic', 'linear', 'rectilinear'], help='Interpolation method to use for creating continous data path X [default=%(default)s].')
-    parser.add_argument("-ntrain", type=int, default=100, help='Number of train samples [default=%(default)s].')
-    parser.add_argument("-nval", type=int, default=100, help='Number of validation samples [default=%(default)s].')
-    parser.add_argument("--max-epochs", type=int, default=1, help='Maximum number of epochs [default=%(default)s].')
+    parser.add_argument("-ntrain", type=int, default=None, help='Number of train samples [default=%(default)s].')
+    parser.add_argument("-nval", type=int, default=None, help='Number of validation samples [default=%(default)s].')
+    parser.add_argument("--max-epochs", type=int, default=20, help='Maximum number of epochs [default=%(default)s].')
     parser.add_argument("-lr", type=float, default=0.001, help='Optimizer initial learning rate [default=%(default)s].')
     parser.add_argument("-BS", type=int, default=600, help='Batch size for train, validation and test sets [default=%(default)s].')
     parser.add_argument("--num-workers", type=int, default=0, help='Num workers for dataloaders [default=%(default)s].')
-    parser.add_argument("-HC", type=int, default=8, help='Hidden channels. Size of the hidden state [default=%(default)s].')
+    parser.add_argument("-HC", type=int, default=80, help='Hidden channels. Size of the hidden state [default=%(default)s].')
     parser.add_argument("-HL", type=int, default=1, help='Number of hidden layers in the vector field [default=%(default)s].')
     parser.add_argument("-HU", type=int, default=128, help='Number of hidden units in the vector field [default=%(default)s].')
-    parser.add_argument("--ES-patience", type=int, default=3, help='Early stopping number of epochs to wait before stopping [default=%(default)s].')
+    parser.add_argument("--ES-patience", type=int, default=5, help='Early stopping number of epochs to wait before stopping [default=%(default)s].')
     parser.add_argument("--lr-decay", default=False, help='Add learning rate decay if when no improvement of training accuracy [default=%(default)s].')
     parser.add_argument("--lr-decay-factor", type=float, default=0.99, help='Learning rate decay factor [default=%(default)s].')
     parser.add_argument("--regularization", default=False, action="store_true", help='Add L2 regularization to the loss function [default=%(default)s].')
     parser.add_argument("--pin-memory", default=False, action="store_true", help='Pass pin memory option to torch.utils.data.DataLoader [default=%(default)s].')
     parser.add_argument("--save", default=True, action="store_true", help='Save results in a text file [default=%(default)s].')
     parser.add_argument("--resume", default=None, help='ID of experiment for resuming training. If None runs a new experiment [default=%(default)s].')
-    parser.add_argument("--logwandb", default=False, action='store_true', help='Log the run in weights and biases [default=%(default)s].')		
+    parser.add_argument("--no-logwandb", default=False, action='store_true', help='Pass flag to NOT log the run in weights and biases [default=%(default)s].')		
     args = parser.parse_args()
     return args
 
@@ -425,12 +423,12 @@ def main(args):
     pin_memory = args_dict['pin_memory']
     save_results = args_dict['save']
     checkpoint_expID = args_dict['resume']
-    logwandb = args_dict['logwandb']
+    logwandb = not args_dict['no_logwandb']
     
     # Logger
     script_name = __file__.split('/')[-1].split('.')[0]
     if logwandb:
-        wandb.init(config=args_dict, project='testing_cpu', save_code=True)
+        wandb.init(config=args_dict, project='crops_gpu_2.0', save_code=True)
         expID = wandb.run.id
         wandb.run.name = expID
         wandb.run.save()
@@ -440,8 +438,7 @@ def main(args):
     print(f'Arguments: \n {args_dict}')
 
     # Get data and labels
-    data_directory = "Data\Crops\processed"
-    absolute_data_directory_path = os.path.join(project_folder_path, data_directory)
+    absolute_data_directory_path = "/cluster/scratch/jgajardo/Data/Crops/processed"
     data = get_data(absolute_data_directory_path=absolute_data_directory_path, use_noskip=noskip, reduced=reduced, ntrain=ntrain_samples, nval=nval_samples)
     times = None if time_default else data['times']
     coeffs_directory = os.path.join(absolute_data_directory_path, 'interpolation_coefficients')
@@ -472,11 +469,9 @@ def main(args):
     # Add learning rate decay
     if lr_decay:
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=0, factor=lr_decay_factor, mode='max', verbose=True)
-
     # Add L2 regularization to loss function
     if l2_reg:
         loss_fn = add_weight_regularisation(loss_fn, model)
-
     # Track models gradients with logger.
     if logwandb:
         wandb.watch(model, criterion=loss_fn, log='all')
@@ -515,10 +510,10 @@ def main(args):
     # Training and validation loop
     best_val_f1 = 0
     best_val_f1_epoch = 0
-    current_lr = learning_rate # be careful that it hasn't been modified from the original argument
+    current_lr = learning_rate 
 
     print('Learning...')
-    if not time_default: times = times.to(device)
+    if not time_default: times = times.to(device) # TShouldn't give problems because times is None otherwise.
     for epoch in range(1, num_epochs + 1):
         model.train()
         for batch in train_dataloader:
@@ -536,8 +531,8 @@ def main(args):
 
         # Compute traininig and validation metrics for the epoch
         model.eval()
-        train_metrics = evaluate_metrics(train_dataloader, model, times, interpolation_method, device, loss_fn=loss_fn)		
-        val_metrics = evaluate_metrics(val_dataloader, model, times, interpolation_method, device, loss_fn=loss_fn)
+        train_metrics = evaluate_metrics(train_dataloader, model, times, interpolation_method, device, loss_fn=loss_fn)	# TODO: check that is doesn't slow down everything too much.	
+        val_metrics = evaluate_metrics(val_dataloader, model, times, interpolation_method, device, loss_fn=loss_fn) # TODO: check that is doesn't slow down everything too much.
         print(f'Epoch: {epoch}, lr={current_lr}  | Training loss: {train_metrics["loss"]: 0.3f}  | Training accuracy: {train_metrics["accuracy"]: 0.3f} | Training F1-score: {train_metrics["f1_score"]: 0.3f}  || Validation loss: {val_metrics["loss"]: 0.3f}  | Validation accuracy: {val_metrics["accuracy"]: 0.3f} | Validation F1-score: {val_metrics["f1_score"]: 0.3f}')
         output.append(dict(epoch=epoch, lr=current_lr, train_metrics=train_metrics, val_metrics=val_metrics))
 
@@ -552,13 +547,13 @@ def main(args):
             scheduler.step(train_metrics['accuracy']) # if metric is loss instead, remember to change mode of optimizer to 'min' (default).
             current_lr = scheduler._last_lr[0]	
 
-        # Checkpoint and early stopping
+        # Early stopping and checkpointing
         if val_metrics["f1_score"] >= best_val_f1 * 1.001:
             best_val_f1 = val_metrics["f1_score"]
             best_val_f1_epoch = epoch
             best_model = copy.deepcopy(model)
             
-            # Save checkpoint of the model
+            # Save checkpoint of the model # TODO: check that is doesn't slow down everything too much.
             checkpoint_path = os.path.join(checkpoints_path, f'exp_{expID}_checkpoint.pt')
             torch.save({
             'epoch': epoch,
@@ -589,11 +584,13 @@ def main(args):
                    'test accuracy (last)': test_metrics_last_model["accuracy"], 'test F1-score (last)': test_metrics_last_model["f1_score"], 'last epoch': epoch})
     
     # Write results to a text file
+    noskip = 'noskip' if use_noskip else ''
+    red = 'red' if reduced else ''
     if save_results:
         n = 0
-        while glob.glob(f'*results{n}*{script_name}_{batch_size}BS_{learning_rate}lr_{hidden_channels}HC_{num_hidden_layers}HL_{hidden_hidden_channels}HU_{early_stopping_patience}ESpatience_lrdecay{lr_decay}_{lr_decay_factor}lrdecayfactor_reg{l2_reg}.txt'):
+        while glob.glob(f'*results{n}*_{batch_size}BS_{learning_rate}lr_{hidden_channels}HC_{num_hidden_layers}HL_{hidden_hidden_channels}HU_{interpolation_method}_{timing}{noskip}{red}.txt'):
             n += 1
-        f = open(f'results{n}_{expID}_{script_name}_{batch_size}BS_{learning_rate}lr_{hidden_channels}HC_{num_hidden_layers}HL_{hidden_hidden_channels}HU_{early_stopping_patience}ESpatience_lrdecay{lr_decay}_{lr_decay_factor}lrdecayfactor_reg{l2_reg}.txt', 'w')
+        f = open(f'results{n}_{expID}_{batch_size}BS_{learning_rate}lr_{hidden_channels}HC_{num_hidden_layers}HL_{hidden_hidden_channels}HU_{interpolation_method}_{timing}{noskip}{red}.txt', 'w')
         for line in output:
             f.write(str(line) +'\n')
         f.close() 
