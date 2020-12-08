@@ -227,20 +227,23 @@ def build_data_path(coeffs, times, interpolation_method):
 def plot_interpolation_path(coefficients, dataset, times, interpolation_method, n=None):
     print('Plotting interpolation of a sample for sanity check...')
     coeffs = coefficients[f'{dataset}_coeffs']
+
+    if n is None or n > coeffs.size(0):
+        n = np.random.randint(0, coeffs.size(0))
+    coeffs = coeffs[n]
     X = build_data_path(coeffs, times, interpolation_method)[0]
     t = None if times == '' else times
+
     if interpolation_method == 'rectilinear':        
         t = X.grid_points # if it's rectifilear (or linear) the ode solver will evaluate at gridpoints anyway.
         print('t knots:', t, t.shape)
     elif interpolation_method == 'cubic' or interpolation_method == 'linear': # plot more points to see the true shape of them (discontinuities in dX for linear and the smoothness of cubic) 
         t = np.linspace(0., X.interval[-1], 1001) 
+
     print('t for plot:', t, t.shape)
     x = X.evaluate(t)
-    if n is None or n > x.size(0):
-        n = np.random.randint(0, x.size(0))
-    x = x[n]
     print('sample x for plot:', x, x.shape)
-    dx = X.derivative(t)[n]
+    dx = X.derivative(t)
 
     # Plot interpolation and derivative
     fig, axs = plt.subplots(2, 1)
@@ -255,7 +258,7 @@ def plot_interpolation_path(coefficients, dataset, times, interpolation_method, 
         plt.axvline(time, linestyle='-.', alpha=0.5, linewidth=0.8, color='gray')
     plt.ylabel('dX/dt')
     fig.suptitle(f'{dataset.capitalize()} set sample {n}: {interpolation_method} data interpolation')
-    #plt.show()
+    plt.show()
     return fig
 
 # Classes for creating the Neural CDE system
