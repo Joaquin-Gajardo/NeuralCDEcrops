@@ -586,6 +586,7 @@ def main(args):
     # Write results to a text file
     noskip = 'noskip' if noskip else ''
     red = 'red' if reduced else ''
+    timing = 'eqspaced' if times is None or interpolation_method == 'rectilinear' else 'irrspaced'
     if save_results:
         n = 0
         while glob.glob(f'*results{n}*_{batch_size}BS_{learning_rate}lr_{hidden_channels}HC_{num_hidden_layers}HL_{hidden_hidden_channels}HU_{interpolation_method}_{timing}{noskip}{red}.txt'):
