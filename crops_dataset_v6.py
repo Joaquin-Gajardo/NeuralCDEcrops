@@ -513,7 +513,7 @@ def main(args):
     current_lr = learning_rate 
 
     print('Learning...')
-    if not time_default: times = times.to(device) # TShouldn't give problems because times is None otherwise.
+    if not time_default: times = times.to(device) # Shouldn't give problems because times is None otherwise.
     for epoch in range(1, num_epochs + 1):
         model.train()
         for batch in train_dataloader:
