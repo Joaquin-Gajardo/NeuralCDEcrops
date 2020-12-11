@@ -51,19 +51,19 @@ def get_data(absolute_data_directory_path, use_noskip=True, reduced=False, ntrai
 
     # Extract data, labels and mask
     data = {} # dictionary for storing the data, mask and labels)
-    data['times'] = torch.Tensor(times_dataset['tt'].value)
+    data['times'] = torch.Tensor(times_dataset['tt'][:])
 
-    data['train_data'] = torch.Tensor(train_dataset['data'].value)
-    data['val_data'] = torch.Tensor(val_dataset['data'].value)
-    data['test_data'] = torch.Tensor(test_dataset['data'].value)
+    data['train_data'] = torch.Tensor(train_dataset['data'][:])
+    data['val_data'] = torch.Tensor(val_dataset['data'][:])
+    data['test_data'] = torch.Tensor(test_dataset['data'][:])
 
-    data['train_labels'] = torch.Tensor(train_dataset['labels'].value)
-    data['val_labels'] = torch.Tensor(val_dataset['labels'].value)
-    data['test_labels'] = torch.Tensor(test_dataset['labels'].value)
+    data['train_labels'] = torch.Tensor(train_dataset['labels'][:])
+    data['val_labels'] = torch.Tensor(val_dataset['labels'][:])
+    data['test_labels'] = torch.Tensor(test_dataset['labels'][:])
 
-    data['train_mask'] = torch.Tensor(train_dataset['mask'].value)
-    data['val_mask'] = torch.Tensor(val_dataset['mask'].value)
-    data['test_mask'] = torch.Tensor(test_dataset['mask'].value)
+    data['train_mask'] = torch.Tensor(train_dataset['mask'][:])
+    data['val_mask'] = torch.Tensor(val_dataset['mask'][:])
+    data['test_mask'] = torch.Tensor(test_dataset['mask'][:])
 
     # Reduce data features if required (only keep features of central pixel of the 3x3 neighbourhood)
     if reduced:
@@ -196,9 +196,9 @@ def get_interpolation_coeffs(directory, data, times, use_noskip, reduced, interp
     else:
         print('Loading corresponding interpolation coefficients ...')
         coeffs_dataset = h5py.File(absolute_coeffs_filename_path, mode='r')
-        coefficients['train_coeffs'] = torch.Tensor(coeffs_dataset['train'].value)
-        coefficients['val_coeffs'] = torch.Tensor(coeffs_dataset['val'].value)
-        coefficients['test_coeffs'] = torch.Tensor(coeffs_dataset['test'].value)
+        coefficients['train_coeffs'] = torch.Tensor(coeffs_dataset['train'][:])
+        coefficients['val_coeffs'] = torch.Tensor(coeffs_dataset['val'][:])
+        coefficients['test_coeffs'] = torch.Tensor(coeffs_dataset['test'][:])
 
     train_coeffs = coefficients['train_coeffs']
     val_coeffs = coefficients['val_coeffs'] 
@@ -438,7 +438,7 @@ def main(args):
     print(f'Arguments: \n {args_dict}')
 
     # Get data and labels
-    absolute_data_directory_path = "/cluster/scratch/jgajardo/Data/Crops/processed"
+    absolute_data_directory_path = "/scratch2/joaquin/Crops/Crops/processed"
     data = get_data(absolute_data_directory_path=absolute_data_directory_path, use_noskip=noskip, reduced=reduced, ntrain=ntrain_samples, nval=nval_samples)
     times = None if time_default else data['times']
     coeffs_directory = os.path.join(absolute_data_directory_path, 'interpolation_coefficients')
@@ -584,8 +584,9 @@ def main(args):
                    'test accuracy (last)': test_metrics_last_model["accuracy"], 'test F1-score (last)': test_metrics_last_model["f1_score"], 'last epoch': epoch})
     
     # Write results to a text file
-    noskip = 'noskip' if use_noskip else ''
+    noskip = 'noskip' if noskip else ''
     red = 'red' if reduced else ''
+    timing = 'eqspaced' if times is None or interpolation_method == 'rectilinear' else 'irrspaced'
     if save_results:
         n = 0
         while glob.glob(f'*results{n}*_{batch_size}BS_{learning_rate}lr_{hidden_channels}HC_{num_hidden_layers}HL_{hidden_hidden_channels}HU_{interpolation_method}_{timing}{noskip}{red}.txt'):
