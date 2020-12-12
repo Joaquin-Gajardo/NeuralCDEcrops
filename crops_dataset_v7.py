@@ -10,7 +10,7 @@ v4: 11.09.2020. LR as an argument and LR decay, added wandb logger. 16.11.2020 l
 v5: 23.11.2020. Added histogram for gradients in wandb.
 v6: 07.12.2020. -Added experiment ID and save and load checkpoints. Using noskip datasets and return mask too in get_data function. Log gradients
                 -Modified data preprocessing considerably and interpolation, added option for reduced dataset, times to use, interpolation method and save coeffs as dataset. Plot sample function, build interpolation path function.
-v7: 09.12.2020. Added batch norm and root data path argument. [TODO: Faster dataloader and baselines]
+v7: 09.12.2020. Added batch norm and root data path argument. Added tqdm progress bar for measuring epochs speed. Added faster dataloader option [TODO: baselines]
 """
 
 # Import libraries
@@ -32,6 +32,8 @@ import pathlib
 import warnings
 import random
 import cProfile
+import tqdm
+import pdb
 
 # Check path
 here = pathlib.Path(__file__).resolve().parent
@@ -321,6 +323,72 @@ class NeuralCDE(torch.nn.Module):
         pred_y = torch.nn.functional.softmax(pred_y, dim=-1) # New. Added a soft-max to get soft assignments that work with the multi-class cross entropy loss function
         return pred_y
 
+class CustomDataset(torch.utils.data.Dataset): # TODO: hdf5 dataset if this is what makes the FasterDataLoader faster
+    def __init__(self, coeffs, labels):
+        assert isinstance(coeffs, torch.Tensor)
+        assert isinstance(labels, torch.Tensor)
+
+    def __len__(self):
+        pass
+    def __getitem__(self, idx):
+        pass
+    
+class FastTensorDataLoader: # Edited from from Nando's class
+    """
+    A DataLoader-like object for a set of tensors that can be much faster than
+    TensorDataset + DataLoader because dataloader grabs individual indices of
+    the dataset and calls cat (slow).
+    """
+    def __init__(self, dataset, batch_size=600, shuffle=False):
+        """
+        Initialize a FastTensorDataLoader.
+        :param *dataset: hdf5 dataset. Eg. Crop dataset
+        :param batch_size: batch size to load.
+        :param shuffle: if True, shuffle the data *in-place* whenever an iterator is created out of this object.
+            Recommendation: set shuffle to False, the underlying hd5y is than more efficient,
+            because id can make use of the contiguous blocks of data.
+
+        :returns: A FastTensorDataLoader.
+        """
+        self.dataset = dataset
+        self.coeffs = dataset.tensors[0]
+        self.labels = dataset.tensors[1]
+        
+        self.dataset_len = len(dataset)
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        
+        # Calculate # batches
+        n_batches, remainder = divmod(self.dataset_len, self.batch_size)
+        if remainder > 0: 
+            n_batches += 1 # what hapens to the last one => not full right?
+        self.n_batches = n_batches
+
+    def __iter__(self):
+        if self.shuffle:
+            self.indices = np.random.permutation(self.dataset_len)
+        else:
+            self.indices = None
+        self.i = 0
+        return self
+
+    def __next__(self):
+        if self.i >= self.dataset_len: #start from beginning again # new epoch??
+            raise StopIteration 
+            self.i = 0
+        if self.indices is not None:
+            indices = np.sort(self.indices[self.i:self.i+self.batch_size])
+            coeffs = self.coeffs[indices]
+            labels = self.labels[indices]
+        else:
+            coeffs = self.coeffs[self.i:self.i+self.batch_size]
+            labels = self.labels[self.i:self.i+self.batch_size]               
+        self.i += self.batch_size
+        return coeffs, labels
+
+    def __len__(self):
+        return self.n_batches
+
 def init_network_weights(net, std = 0.1): # From Nando. Not used, Pytorch default initialization of layers seems alright.
     for m in net.modules():
         if isinstance(m, torch.nn.Linear):
@@ -409,7 +477,7 @@ def parse_args():
     parser.add_argument("-HC", type=int, default=80, help='Hidden channels. Size of the hidden state [default=%(default)s].')
     parser.add_argument("-HL", type=int, default=1, help='Number of hidden layers in the vector field [default=%(default)s].')
     parser.add_argument("-HU", type=int, default=128, help='Number of hidden units in the vector field [default=%(default)s].')
-    parser.add_argument("-bn", default=False, help='Apply batch norm to before every activation function [default=%(default)s].')
+    parser.add_argument("-bn", default=False, action="store_true", help='Apply batch norm to before every activation function [default=%(default)s].')
     parser.add_argument("--ES-patience", type=int, default=5, help='Early stopping number of epochs to wait before stopping [default=%(default)s].')
     parser.add_argument("--lr-decay", default=False, help='Add learning rate decay if when no improvement of training accuracy [default=%(default)s].')
     parser.add_argument("--lr-decay-factor", type=float, default=0.99, help='Learning rate decay factor [default=%(default)s].')
@@ -417,7 +485,8 @@ def parse_args():
     parser.add_argument("--pin-memory", default=False, action="store_true", help='Pass pin memory option to torch.utils.data.DataLoader [default=%(default)s].')
     parser.add_argument("--save", default=True, action="store_true", help='Save results in a text file [default=%(default)s].')
     parser.add_argument("--resume", default=None, help='ID of experiment for resuming training. If None runs a new experiment [default=%(default)s].')
-    parser.add_argument("--no-logwandb", default=False, action='store_true', help='Pass flag to NOT log the run in weights and biases [default=%(default)s].')		
+    parser.add_argument("--no-logwandb", default=False, action='store_true', help='Pass flag to NOT log the run in weights and biases [default=%(default)s].')
+    parser.add_argument("--fast-dataloader", default=False, action='store_true', help='Try out fast dataloader (with shuffle=False) [default=%(default)s].')		
     args = parser.parse_args()
     return args
 
@@ -448,6 +517,7 @@ def main(args):
     save_results = args_dict['save']
     checkpoint_expID = args_dict['resume']
     logwandb = not args_dict['no_logwandb']
+    fast_loader = args_dict['fast_dataloader']
     
     # Logger
     script_name = __file__.split('/')[-1].split('.')[0]
@@ -484,7 +554,7 @@ def main(args):
 
     # Define model, optimizer and loss function
     vector_field = VectorField(input_channels, hidden_channels, hidden_hidden_channels, num_hidden_layers, batch_norm=batch_norm)
-    model = NeuralCDE(vector_field=vector_field, input_channels=input_channels, hidden_channels=hidden_channels, output_channels=output_channels, batch_norm=True).to(device)
+    model = NeuralCDE(vector_field=vector_field, input_channels=input_channels, hidden_channels=hidden_channels, output_channels=output_channels, batch_norm=batch_norm).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     loss_fn = compute_multiclass_cross_entropy
     print(model)
@@ -520,9 +590,15 @@ def main(args):
     train_TensorDataset = torch.utils.data.TensorDataset(coefficients['train_coeffs'], data['train_labels'])
     val_TensorDataset = torch.utils.data.TensorDataset(coefficients['val_coeffs'], data['val_labels'])
     test_TensorDataset = torch.utils.data.TensorDataset(coefficients['test_coeffs'], data['test_labels'])
-    train_dataloader = torch.utils.data.DataLoader(train_TensorDataset, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory, shuffle=True)
-    val_dataloader = torch.utils.data.DataLoader(val_TensorDataset, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory)
-    test_dataloader = torch.utils.data.DataLoader(test_TensorDataset, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory)
+
+    if fast_loader:
+        train_dataloader = FastTensorDataLoader(train_TensorDataset, batch_size=batch_size, shuffle=False)
+        val_dataloader = FastTensorDataLoader(val_TensorDataset, batch_size=batch_size,)
+        test_dataloader = FastTensorDataLoader(test_TensorDataset, batch_size=batch_size)
+    else: 
+        train_dataloader = torch.utils.data.DataLoader(train_TensorDataset, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory, shuffle=True)
+        val_dataloader = torch.utils.data.DataLoader(val_TensorDataset, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory)
+        test_dataloader = torch.utils.data.DataLoader(test_TensorDataset, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory)
 
     # Store intended output in a list and update logger
     output = []
@@ -539,7 +615,8 @@ def main(args):
 
     print('Learning...')
     if not time_default: times = times.to(device) # Shouldn't give problems because times is None otherwise.
-    for epoch in range(1, num_epochs + 1):
+    pbar = tqdm.tqdm(range(1, num_epochs + 1))
+    for epoch in pbar:
         model.train()
         for batch in train_dataloader:
             optimizer.zero_grad()
@@ -558,7 +635,7 @@ def main(args):
         model.eval()
         train_metrics = evaluate_metrics(train_dataloader, model, times, interpolation_method, device, loss_fn=loss_fn)	# TODO: check that is doesn't slow down everything too much.	
         val_metrics = evaluate_metrics(val_dataloader, model, times, interpolation_method, device, loss_fn=loss_fn) # TODO: check that is doesn't slow down everything too much.
-        print(f'Epoch: {epoch}, lr={current_lr}  | Training loss: {train_metrics["loss"]: 0.3f}  | Training accuracy: {train_metrics["accuracy"]: 0.3f} | Training F1-score: {train_metrics["f1_score"]: 0.3f}  || Validation loss: {val_metrics["loss"]: 0.3f}  | Validation accuracy: {val_metrics["accuracy"]: 0.3f} | Validation F1-score: {val_metrics["f1_score"]: 0.3f}')
+        pbar.write(f'Epoch: {epoch}, lr={current_lr}  | Training loss: {train_metrics["loss"]: 0.3f}  | Training accuracy: {train_metrics["accuracy"]: 0.3f} | Training F1-score: {train_metrics["f1_score"]: 0.3f}  || Validation loss: {val_metrics["loss"]: 0.3f}  | Validation accuracy: {val_metrics["accuracy"]: 0.3f} | Validation F1-score: {val_metrics["f1_score"]: 0.3f}')
         output.append(dict(epoch=epoch, lr=current_lr, train_metrics=train_metrics, val_metrics=val_metrics))
 
         # Log train and val metrics
@@ -588,7 +665,7 @@ def main(args):
             }, checkpoint_path)
             
         elif epoch >= best_val_f1_epoch + early_stopping_patience:
-            print(f'Breaking because of no improvement in validation F1-score after {early_stopping_patience} epochs.')
+            pbar.write(f'Breaking because of no improvement in validation F1-score after {early_stopping_patience} epochs.')
             break
 
     # Evaluate performance on test dataset
