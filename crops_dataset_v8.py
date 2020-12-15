@@ -579,7 +579,7 @@ def parse_args():
     parser.add_argument("--no-logwandb", default=False, action='store_true', help='Log the run in weights and biases [default=%(default)s].')		
     parser.add_argument("--fast-dataloader", default=False, action='store_true', help='Try out fast dataloader (with shuffle=False) [default=%(default)s].')		
     parser.add_argument("--grad-clip", type=float, default=None, help='Max norm to clip gradients to [default=%(default)s].')		
-    parser.add_argument("--model", type=str, default='rnn', choices=['ncde', 'rnn', 'gru', 'lstm'], help='Model to use [default=%(default)s].')
+    parser.add_argument("--model", type=str, default='ncde', choices=['ncde', 'rnn', 'gru', 'lstm'], help='Model to use [default=%(default)s].')
     parser.add_argument("--seminorm", default=False, action="store_true", help='If to use seminorm for 2x speed up odeint adaptative solvers [default=%(default)s].')
     args = parser.parse_args()
     return args
