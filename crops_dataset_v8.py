@@ -807,13 +807,16 @@ def main(args):
     red = 'red' if reduced else ''
     timing = 'eqspaced' if times is None or interpolation_method == 'rectilinear' else 'irrspaced'
     if save_results:
+        results_path = os.path.join(here, 'results')
+        if not os.path.exists(results_path):
+            os.mkdir(results_path)
         n = 0
-        while glob.glob(f'*results{n}*_{batch_size}BS_{learning_rate}lr_{hidden_channels}HC_{num_hidden_layers}HL_{hidden_hidden_channels}HU_{interpolation_method}_{timing}{noskip}{red}.txt'):
+        while glob.glob(os.path.join(results_path, f'*results{n}*_{batch_size}BS_{learning_rate}lr_{hidden_channels}HC_{num_hidden_layers}HL_{hidden_hidden_channels}HU_{interpolation_method}_{timing}{noskip}{red}.txt')):
             n += 1
-        f = open(f'results{n}_{expID}_{batch_size}BS_{learning_rate}lr_{hidden_channels}HC_{num_hidden_layers}HL_{hidden_hidden_channels}HU_{interpolation_method}_{timing}{noskip}{red}.txt', 'w')
+        f = open(os.path.join(results_path, f'results{n}_{expID}_{batch_size}BS_{learning_rate}lr_{hidden_channels}HC_{num_hidden_layers}HL_{hidden_hidden_channels}HU_{interpolation_method}_{timing}{noskip}{red}.txt'), 'w')
         for line in output:
             f.write(str(line) +'\n')
-        f.close() 
+        f.close()
 
 if __name__ == '__main__':
     start_time = time.time()
