@@ -11,13 +11,14 @@ v5: 23.11.2020. Added histogram for gradients in wandb.
 v6: 07.12.2020. -Added experiment ID and save and load checkpoints. Using noskip datasets and return mask too in get_data function. Log gradients
                 -Modified data preprocessing considerably and interpolation, added option for reduced dataset, times to use, interpolation method and save coeffs as dataset. Plot sample function, build interpolation path function.
 v7: 09.12.2020. Added batch norm and root data path argument. Added tqdm progress bar for measuring epochs speed. Added faster dataloader option.
-v8: 14.12.2020. Added gradient clipping and replaced batch norm by layer norm options. 15.12.2020. Added RNN baseline models and semilog speed up option.
+v8: 14.12.2020. Added gradient clipping and replaced batch norm by layer norm options. 15.12.2020. Added RNN baseline models and semilog speed up option. 23.12. Added odernn baseline, atol/rtol options and nfes + time logging.
 """
 
 # Import libraries
 import numpy as np
 import math
 import torch
+import torchdiffeq
 import torchcde
 import matplotlib.pyplot as plt
 import wandb
@@ -43,6 +44,9 @@ here = pathlib.Path(__file__).resolve().parent
 warnings.filterwarnings("ignore")
 
 ################################################################################################
+# Swiscrop labels
+label_names = ['No Label','Maize', 'Meadow', 'Pasture', 'Potatoes', 'Spelt', 'Sugarbeets', 'Sunflowers', 'Vegetables', 'Vines', 'Wheat', 'Winter barley', 'Winter rapeseed', 'Winter wheat']
+labels = [0, 1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13]
 
 # Get processed data from TUM dataset (TODO add script with Nando's code of data processing!)
 def get_data(absolute_data_directory_path, use_noskip=True, reduced=False, ntrain=None, nval=None, use_model='ncde'):
@@ -266,11 +270,12 @@ def plot_interpolation_path(coefficients, dataset, times, interpolation_method, 
     return fig
 
 # Classes for creating the Neural CDE system
-class VectorField(torch.nn.Module):
+class CDEFunc(torch.nn.Module):
     def __init__(self, input_channels, hidden_channels, hidden_hidden_channels, num_hidden_layers, layer_norm=False):
         ''' input_channels are the features in the data and hidden channels
             is an hyperparameter determining the dimensionality of the hidden state z'''
-        super(VectorField, self).__init__()
+        super(CDEFunc, self).__init__()
+        self.nfe = 0 # number of function evaluations
         self.input_channels = input_channels
         self.hidden_channels = hidden_channels
         self.linear_in = torch.nn.Linear(hidden_channels, hidden_hidden_channels)
@@ -283,6 +288,7 @@ class VectorField(torch.nn.Module):
             self.ln_out = torch.nn.LayerNorm(input_channels * hidden_channels)
 
     def forward(self, t, z):
+        self.nfe += 1
         z = self.linear_in(z)
         if self.layer_norm:
             z = self.ln_in(z)
@@ -298,18 +304,30 @@ class VectorField(torch.nn.Module):
         z = z.tanh() # authors say that a final tanh non-linearity gives the best results
         z = z.view(z.size(0), self.hidden_channels, self.input_channels) # batch is first input
         return z
+    
+    def reset_nfe(self):
+        self.nfe = 0
 
 class NeuralCDE(torch.nn.Module):
-    def __init__(self, vector_field, input_channels, hidden_channels, output_channels, layer_norm=False, seminorm=False):
+    def __init__(self, vector_field, input_channels, hidden_channels, output_channels, rtol=1e-4, atol=1e-6, layer_norm=False, seminorm=False):
         super(NeuralCDE, self).__init__()
-        self.vector_field = vector_field
+        self.func = vector_field
         self.initial = torch.nn.Linear(input_channels, hidden_channels)
         self.readout = torch.nn.Linear(hidden_channels, output_channels)
+        self.rtol = rtol
+        self.atol = atol
         self.layer_norm = layer_norm
         self.seminorm = seminorm
         if self.layer_norm:
             self.ln_initial = torch.nn.LayerNorm(hidden_channels)
             self.ln_output = torch.nn.LayerNorm(output_channels)
+
+    @property
+    def nfe(self):
+        return self.func.nfe
+
+    def reset_nfe(self):
+        self.func.reset_nfe()
 
     def forward(self, coeffs, times, interpolation_method):
         X, cdeint_options = build_data_path(coeffs, times, interpolation_method)
@@ -321,7 +339,7 @@ class NeuralCDE(torch.nn.Module):
        
         if self.layer_norm:
             z0 = self.ln_initial(z0)
-        z_t = torchcde.cdeint(X=X, z0=z0, func=self.vector_field, t=X.interval, options=cdeint_options, adjoint_options=adjoint_options) # t=times[[0, -1]] is the same (but only when times is not None...)
+        z_t = torchcde.cdeint(X=X, z0=z0, func=self.func, t=X.interval, options=cdeint_options, adjoint_options=adjoint_options, rtol=self.rtol, atol=self.atol) # t=times[[0, -1]] is the same (but only when times is not None...)
 
         # Both z0 and z_T are returned from cdeint, extract just last value
         z_T = z_t[:, -1]
@@ -332,75 +350,143 @@ class NeuralCDE(torch.nn.Module):
         return pred_y
 
 class RNN(torch.nn.Module): # Thank you Python Engineer! https://www.youtube.com/watch?v=0_PgWWmauHk
-    def __init__(self, input_channels, hidden_channels, num_layers, output_channels, device):
+    def __init__(self, input_channels, hidden_channels, num_layers, output_channels):
         super(RNN, self).__init__()
         self.num_layers = num_layers # how many RNN layers stacked together
         self.hidden_channels = hidden_channels
-        self.device = device
         self.rnn = torch.nn.RNN(input_channels, hidden_channels, num_layers, batch_first=True)
-        self.fc = torch.nn.Linear(hidden_channels, output_channels)
+        self.linear = torch.nn.Linear(hidden_channels, output_channels)
     
     def forward(self, x, times, interpolation_method):
         # TODO: remove need of passing times and interpolation methods, they are meant for ncde model!
         # x -> batch_size, seq_length, input_size
-        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_channels).to(self.device)
+        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_channels, device=x.device)
 
         # Push through rnn (out: batch_size, seq_length, hidden_size)
         out, _ = self.rnn(x, h0)
         # Take only hidden vector of last sequence
         out = out[:, -1, :]
         # Decode into classes
-        out = self.fc(out)
+        out = self.linear(out)
         out = torch.nn.functional.softmax(out, dim=-1) # Last layer same as ncde
         return out
 
 class GRU(torch.nn.Module): # Thank you Python Engineer! https://www.youtube.com/watch?v=0_PgWWmauHk
-    def __init__(self, input_channels, hidden_channels, num_layers, output_channels, device):
+    def __init__(self, input_channels, hidden_channels, num_layers, output_channels):
         super(GRU, self).__init__()
         self.num_layers = num_layers # how many RNN layers stacked together
         self.hidden_channels = hidden_channels
-        self.device = device
         self.gru = torch.nn.GRU(input_channels, hidden_channels, num_layers, batch_first=True)
-        self.fc = torch.nn.Linear(hidden_channels, output_channels)
+        self.linear = torch.nn.Linear(hidden_channels, output_channels)
     
     def forward(self, x, times, interpolation_method):
         # TODO: remove need of passing times and interpolation methods, they are meant for ncde model!
         # x -> batch_size, seq_length, input_size
-        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_channels).to(self.device)
+        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_channels, device=x.device)
 
         # Push through rnn (out: batch_size, seq_length, hidden_size)
         out, _ = self.gru(x, h0)
         # Take only hidden vector of last sequence
         out = out[:, -1, :]
         # Decode into classes
-        out = self.fc(out)
+        out = self.linear(out)
         out = torch.nn.functional.softmax(out, dim=-1) # Last layer same as ncde
         return out
 
 class LSTM(torch.nn.Module): # Thank you Python Engineer! https://www.youtube.com/watch?v=0_PgWWmauHk
-    def __init__(self, input_channels, hidden_channels, num_layers, output_channels, device):
+    def __init__(self, input_channels, hidden_channels, num_layers, output_channels):
         super(LSTM, self).__init__()
         self.num_layers = num_layers # how many RNN layers stacked together
         self.hidden_channels = hidden_channels
-        self.device = device
         self.lstm = torch.nn.LSTM(input_channels, hidden_channels, num_layers, batch_first=True)
-        self.fc = torch.nn.Linear(hidden_channels, output_channels)
+        self.linear = torch.nn.Linear(hidden_channels, output_channels)
     
     def forward(self, x, times, interpolation_method):
         # TODO: remove need of passing times and interpolation methods, they are meant for ncde model!
         # x -> batch_size, seq_length, input_size
-        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_channels).to(self.device)
-        c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_channels).to(self.device)
+        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_channels, device=x.device)
+        c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_channels, device=x.device)
 
         # Push through rnn (out: batch_size, seq_length, hidden_size)
         out, _ = self.lstm(x, (h0, c0))
         # Take only hidden vector of last sequence
         out = out[:, -1, :]
         # Decode into classes
-        out = self.fc(out)
+        out = self.linear(out)
         out = torch.nn.functional.softmax(out, dim=-1) # Last layer same as ncde
         return out
 
+class ODERNNFunc(torch.nn.Module): # From Kidger 2020
+    def __init__(self, hidden_channels, hidden_hidden_channels, num_hidden_layers):
+        super(ODERNNFunc, self).__init__()
+        self.nfe = 0 # number of function evaluations
+        layers = [torch.nn.Linear(hidden_channels, hidden_hidden_channels)]
+        for _ in range(num_hidden_layers - 1):
+            layers.append(torch.nn.Tanh())
+            layers.append(torch.nn.Linear(hidden_hidden_channels, hidden_hidden_channels))
+        layers.append(torch.nn.Tanh())
+        layers.append(torch.nn.Linear(hidden_hidden_channels, hidden_channels))
+        self.sequential = torch.nn.Sequential(*layers)
+
+    def forward(self, t, z):
+        self.nfe += 1
+        return self.sequential(z)
+    
+    def reset_nfe(self):
+        self.nfe = 0
+
+class ODERNN(torch.nn.Module): # From Kidger 2020
+    def __init__(self, input_channels, hidden_channels, hidden_hidden_channels, num_hidden_layers, output_channels, rtol=1e-4, atol=1e-5):
+        super(ODERNN, self).__init__()
+        self.input_channels = input_channels
+        self.hidden_channels = hidden_channels
+        self.output_channels = output_channels
+        self.rtol = rtol
+        self.atol = atol
+        self.func = ODERNNFunc(hidden_channels, hidden_hidden_channels, num_hidden_layers)
+        self.gru = torch.nn.GRUCell(input_channels, hidden_channels)
+        self.linear = torch.nn.Linear(hidden_channels, output_channels)
+    
+    @property
+    def nfe(self):
+        return self.func.nfe
+
+    def reset_nfe(self):
+        self.func.reset_nfe()
+    
+    def _step(self, xi, h):
+        new_h = self.gru(xi, h)
+        h = new_h
+        return h
+
+    def evolve(self, h, time_diff):
+        t = torch.Tensor([0, time_diff.item()], device=time_diff.device)
+        out = torchdiffeq.odeint_adjoint(func=self.func, y0=h, t=t, method='rk4', rtol=self.rtol, atol=self.atol)
+        return out[1]
+
+    def forward(self, x, times, interpolation_method):
+        # Initialite z0
+        batch_dims = x.size(0)
+        h0 = torch.zeros(batch_dims, self.hidden_channels, dtype=x.dtype, device=x.device)
+
+        # Make first update
+        x_unbound = x.unbind(dim=1)
+        h = self._step(x_unbound[0], h0)
+
+        # Evolve-updates steps
+        hs = [h]
+        time_diffs = times[1:] - times[:-1]
+        for time_diff, xi in zip(time_diffs, x_unbound[1:]):
+            h = self.evolve(h, time_diff)
+            h = self._step(xi, h)
+            hs.append(h)
+        out = torch.stack(hs, dim=1)
+
+        # Decode into classes
+        out = out[:, -1, :] # take only last hidden vector
+        out = self.linear(out)
+        out = torch.nn.functional.softmax(out, dim=-1) # Last layer same as ncde
+        return out
 
 class CustomDataset(torch.utils.data.Dataset): # TODO: hdf5 dataset if this is what makes the FasterDataLoader faster
     def __init__(self, coeffs, labels):
@@ -579,8 +665,10 @@ def parse_args():
     parser.add_argument("--no-logwandb", default=False, action='store_true', help='Log the run in weights and biases [default=%(default)s].')		
     parser.add_argument("--fast-dataloader", default=False, action='store_true', help='Try out fast dataloader (with shuffle=False) [default=%(default)s].')		
     parser.add_argument("--grad-clip", type=float, default=None, help='Max norm to clip gradients to [default=%(default)s].')		
-    parser.add_argument("--model", type=str, default='ncde', choices=['ncde', 'rnn', 'gru', 'lstm'], help='Model to use [default=%(default)s].')
+    parser.add_argument("--model", type=str, default='ncde', choices=['ncde', 'odernn', 'rnn', 'gru', 'lstm'], help='Model to use [default=%(default)s].')
     parser.add_argument("--seminorm", default=False, action="store_true", help='If to use seminorm for 2x speed up odeint adaptative solvers [default=%(default)s].')
+    parser.add_argument("--rtol", type=float, default=1e-4, help='Relative tolerance for odeint solvers [default=%(default)s].')
+    parser.add_argument("--atol", type=float, default=1e-6, help='Absolute tolerace for odeint solvers [default=%(default)s].')
     args = parser.parse_args()
     return args
 
@@ -615,6 +703,8 @@ def main(args):
     grad_clip = args_dict['grad_clip']
     use_model = args_dict['model']
     seminorm = args_dict['seminorm']
+    rtol = args_dict['rtol']
+    atol = args_dict['atol']
     
     # Logger
     script_name = __file__.split('/')[-1].split('.')[0]
@@ -630,7 +720,7 @@ def main(args):
 
     # Get data and labels
     data = get_data(absolute_data_directory_path=absolute_data_directory_path, use_noskip=noskip, reduced=reduced, ntrain=ntrain_samples, nval=nval_samples, use_model=use_model)
-    times = None if time_default else data['times']
+    times = None if time_default and use_model == 'ncde' else data['times']
     coeffs_directory = os.path.join(absolute_data_directory_path, 'interpolation_coefficients')
     if use_model == 'ncde':
         coefficients = get_interpolation_coeffs(coeffs_directory, data, times, interpolation_method=interpolation_method, use_noskip=noskip, reduced=reduced)
@@ -652,14 +742,16 @@ def main(args):
 
     # Define model
     if use_model == 'ncde':
-        vector_field = VectorField(input_channels, hidden_channels, hidden_hidden_channels, num_hidden_layers, layer_norm=layer_norm)
-        model = NeuralCDE(vector_field=vector_field, input_channels=input_channels, hidden_channels=hidden_channels, output_channels=output_channels, layer_norm=layer_norm, seminorm=seminorm).to(device)
+        vector_field = CDEFunc(input_channels, hidden_channels, hidden_hidden_channels, num_hidden_layers, layer_norm=layer_norm)
+        model = NeuralCDE(vector_field=vector_field, input_channels=input_channels, hidden_channels=hidden_channels, output_channels=output_channels, layer_norm=layer_norm, seminorm=seminorm, rtol=rtol, atol=atol).to(device)
     elif use_model == 'rnn':
-        model = RNN(input_channels=input_channels, hidden_channels=hidden_channels, num_layers=num_hidden_layers, output_channels=output_channels, device=device).to(device)
+        model = RNN(input_channels=input_channels, hidden_channels=hidden_channels, num_layers=num_hidden_layers, output_channels=output_channels).to(device)
     elif use_model == 'gru':
-        model = GRU(input_channels=input_channels, hidden_channels=hidden_channels, num_layers=num_hidden_layers, output_channels=output_channels, device=device).to(device)
+        model = GRU(input_channels=input_channels, hidden_channels=hidden_channels, num_layers=num_hidden_layers, output_channels=output_channels).to(device)
     elif use_model == 'lstm':
-        model = LSTM(input_channels=input_channels, hidden_channels=hidden_channels, num_layers=num_hidden_layers, output_channels=output_channels, device=device).to(device)
+        model = LSTM(input_channels=input_channels, hidden_channels=hidden_channels, num_layers=num_hidden_layers, output_channels=output_channels).to(device)
+    elif use_model =='odernn':
+        model = ODERNN(input_channels=input_channels, hidden_channels=hidden_channels, hidden_hidden_channels=hidden_hidden_channels, num_hidden_layers=num_hidden_layers, output_channels=output_channels, rtol=rtol, atol=atol).to(device)
     
     print(model)
 
@@ -675,7 +767,7 @@ def main(args):
     if l2_reg:
         loss_fn = add_weight_regularisation(loss_fn, model)
 
-    # Track models gradients with logger.
+    # Track models gradients with logger
     if logwandb:
         wandb.watch(model, criterion=loss_fn, log='all')
 
@@ -700,7 +792,7 @@ def main(args):
         val_TensorDataset = torch.utils.data.TensorDataset(coefficients['val_coeffs'], data['val_labels'])
         test_TensorDataset = torch.utils.data.TensorDataset(coefficients['test_coeffs'], data['test_labels'])
     
-    elif use_model == 'rnn':
+    else:
         train_TensorDataset = torch.utils.data.TensorDataset(data['train_data'], data['train_labels'])
         val_TensorDataset = torch.utils.data.TensorDataset(data['val_data'], data['val_labels'])
         test_TensorDataset = torch.utils.data.TensorDataset(data['test_data'], data['test_labels'])
@@ -727,23 +819,43 @@ def main(args):
     best_val_f1 = 0
     best_val_f1_epoch = 0
     current_lr = learning_rate 
+    is_ode = use_model == 'ncde' or use_model == 'odernn'
 
     print('Learning...')
     if not time_default: times = times.to(device) # Shouldn't give problems because times is None otherwise.
+    start = time.time()
     pbar = tqdm.tqdm(range(1, num_epochs + 1))
     for epoch in pbar:
+        start_epoch = time.time()
+        epoch_nfes = 0 # number of fuction evaluations for ncde and odernn on forward pass
+        epoch_bnfes = 0 # number of fuction evaluations for ncde and odernn on backward pass
         model.train()
         for batch in train_dataloader:
+            # Forward pass
+            model.reset_nfe()
             optimizer.zero_grad()
             batch = tuple(b.to(device) for b in batch)
             batch_data, batch_y = batch # labels are not all 1s and 0s -> Nando leverages this soft labels for training and for accuracy he does with hard labels (argmax)
             pred_y = model(batch_data, times, interpolation_method).squeeze(-1)
             loss = loss_fn(batch_y, pred_y) # problem: returns nan because cannot do log of a negative value (prediction) -> solved it with softmax!
+            
+            if is_ode:
+                iteration_nfes = model.nfe
+                epoch_nfes += iteration_nfes
+                model.reset_nfe()
+
+            # Backward pass
             loss.backward()
             if grad_clip is not None:
                 torch.nn.utils.clip_grad_norm(model.parameters(), max_norm=grad_clip) # New
             optimizer.step()
 
+            if is_ode:
+                iteration_bnfes = model.nfe
+                epoch_bnfes += iteration_bnfes
+                model.reset_nfe()
+
+            # Log gradients for inspection
             for name, parameter in model.named_parameters():
                 if logwandb:
                     wandb.log({f'gradient/{name}': wandb.Histogram(parameter.grad.detach().cpu().numpy())}) 
@@ -752,14 +864,16 @@ def main(args):
         model.eval()
         train_metrics = evaluate_metrics(train_dataloader, model, times, interpolation_method, device, loss_fn=loss_fn)	# TODO: check that is doesn't slow down everything too much.	
         val_metrics = evaluate_metrics(val_dataloader, model, times, interpolation_method, device, loss_fn=loss_fn) # TODO: check that is doesn't slow down everything too much.
-        pbar.write(f'Epoch: {epoch}, lr={current_lr}  | Training loss: {train_metrics["loss"]: 0.3f}  | Training accuracy: {train_metrics["accuracy"]: 0.3f} | Training F1-score: {train_metrics["f1_score"]: 0.3f}  || Validation loss: {val_metrics["loss"]: 0.3f}  | Validation accuracy: {val_metrics["accuracy"]: 0.3f} | Validation F1-score: {val_metrics["f1_score"]: 0.3f}')
-        output.append(dict(epoch=epoch, lr=current_lr, train_metrics=train_metrics, val_metrics=val_metrics))
+        epoch_time = round(time.time() - start_epoch, 1)
+        total_nfes = epoch_nfes + epoch_bnfes
+        pbar.write(f'Epoch: {epoch}, lr={current_lr}, epoch time: {epoch_time}s, nfes: {epoch_nfes}, bnfes: {epoch_bnfes}, total nfes: {total_nfes}  || Training loss: {train_metrics["loss"]: 0.3f}  | Training accuracy: {train_metrics["accuracy"]: 0.3f} | Training F1-score: {train_metrics["f1_score"]: 0.3f}  || Validation loss: {val_metrics["loss"]: 0.3f}  | Validation accuracy: {val_metrics["accuracy"]: 0.3f} | Validation F1-score: {val_metrics["f1_score"]: 0.3f}')
+        output.append(dict(epoch=epoch, lr=current_lr, epoch_time=epoch_time, nfes=epoch_nfes, bnfes=epoch_bnfes, total_nfes=total_nfes, train_metrics=train_metrics, val_metrics=val_metrics))
 
         # Log train and val metrics
         if logwandb:
             wandb.log({'training loss': train_metrics["loss"], 'training accuracy': train_metrics["accuracy"], 'training F1-score': train_metrics["f1_score"],
-                          'validation loss': val_metrics["loss"], 'validation accuracy': val_metrics["accuracy"], 'validation F1-score': val_metrics["f1_score"],
-                         'epoch': epoch})
+                    'validation loss': val_metrics["loss"], 'validation accuracy': val_metrics["accuracy"], 'validation F1-score': val_metrics["f1_score"],
+                    'epoch': epoch, 'epoch time': epoch_time,'nfes': epoch_nfes, 'bnfes': epoch_bnfes, 'total nfes': total_nfes})
 
         # Update learning rate
         if lr_decay:
@@ -785,6 +899,11 @@ def main(args):
             pbar.write(f'Breaking because of no improvement in validation F1-score after {early_stopping_patience} epochs.')
             break
 
+    train_time = round(time.time() - start, 1)
+    print(f'Train time: {train_time} seconds')
+    if logwandb:
+        wandb.log({'train time': train_time})
+
     # Evaluate performance on test dataset
     print('Testing...')
     #model = best_model
@@ -794,7 +913,7 @@ def main(args):
     test_metrics_best_model = evaluate_metrics(test_dataloader, best_model, times, interpolation_method, device, loss_fn=loss_fn)
     print(f'Test accuracy last model (epoch {epoch}): {test_metrics_last_model["accuracy"]}, Test f1 score last model: {test_metrics_last_model["f1_score"]}')
     print(f'Test accuracy best model (epoch {best_val_f1_epoch}): {test_metrics_best_model["accuracy"]}, Test f1 score best model: {test_metrics_best_model["f1_score"]}')
-    output.append(dict(test_accuracy=test_metrics_best_model["accuracy"], test_f1_score=test_metrics_best_model["f1_score"]))
+    output.append(dict(test_accuracy=test_metrics_best_model["accuracy"], test_f1_score=test_metrics_best_model["f1_score"], train_time=train_time))
     print(output)
     
     # Log test metrics
