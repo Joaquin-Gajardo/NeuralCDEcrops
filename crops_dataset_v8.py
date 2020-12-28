@@ -644,15 +644,15 @@ def parse_args():
     parser.add_argument("--reduced", default=False, action="store_true", help='Use only a fraction of the dataset features (for Crops dataset) [default=%(default)s].')
     parser.add_argument("--time-default", default=False, action="store_true", help='To not pass the original dataset timestamps to the interpolation and model and use the default equally spaced time array of torchde interpolation methods [default=%(default)s].')
     parser.add_argument("--interpol-method", type=str, default='cubic', choices=['cubic', 'linear', 'rectilinear'], help='Interpolation method to use for creating continous data path X [default=%(default)s].')
-    parser.add_argument("-ntrain", type=int, default=None, help='Number of train samples [default=%(default)s].')
-    parser.add_argument("-nval", type=int, default=None, help='Number of validation samples [default=%(default)s].')
+    parser.add_argument("--ntrain", type=int, default=None, help='Number of train samples [default=%(default)s].')
+    parser.add_argument("--nval", type=int, default=None, help='Number of validation samples [default=%(default)s].')
     parser.add_argument("--max-epochs", type=int, default=20, help='Maximum number of epochs [default=%(default)s].')
-    parser.add_argument("-lr", type=float, default=0.001, help='Optimizer initial learning rate [default=%(default)s].')
-    parser.add_argument("-BS", type=int, default=600, help='Batch size for train, validation and test sets [default=%(default)s].')
+    parser.add_argument("--lr", type=float, default=0.001, help='Optimizer initial learning rate [default=%(default)s].')
+    parser.add_argument("--BS", type=int, default=600, help='Batch size for train, validation and test sets [default=%(default)s].')
     parser.add_argument("--num-workers", type=int, default=0, help='Num workers for dataloaders [default=%(default)s].')
-    parser.add_argument("-HC", type=int, default=80, help='Hidden channels. Size of the hidden state in NCDE or RNN models [default=%(default)s].')
-    parser.add_argument("-HL", type=int, default=1, help='Number of hidden layers in the vector field or of RNN layers if an RNN model is selected [default=%(default)s].')
-    parser.add_argument("-HU", type=int, default=128, help='Number of hidden units in the vector field [default=%(default)s].')
+    parser.add_argument("--HC", type=int, default=80, help='Hidden channels. Size of the hidden state in NCDE or RNN models [default=%(default)s].')
+    parser.add_argument("--HL", type=int, default=1, help='Number of hidden layers in the vector field or of RNN layers if an RNN model is selected [default=%(default)s].')
+    parser.add_argument("--HU", type=int, default=128, help='Number of hidden units in the vector field [default=%(default)s].')
     parser.add_argument("--layer-norm", default=False, action="store_true", help='Apply layer norm to before every activation function [default=%(default)s].')
     parser.add_argument("--ES-patience", type=int, default=5, help='Early stopping number of epochs to wait before stopping [default=%(default)s].')
     parser.add_argument("--lr-decay", default=False, help='Add learning rate decay if when no improvement of training accuracy [default=%(default)s].')
@@ -865,7 +865,7 @@ def main(args):
         val_metrics = evaluate_metrics(val_dataloader, model, times, interpolation_method, device, loss_fn=loss_fn) # TODO: check that is doesn't slow down everything too much.
         epoch_time = round(time.time() - start_epoch, 1)
         total_nfes = epoch_nfes + epoch_bnfes
-        pbar.write(f'Epoch: {epoch}, lr={current_lr}, epoch time: {epoch_time}s, nfes: {epoch_nfes}, bnfes: {epoch_bnfes}, total nfes: {total_nfes}  || Training loss: {train_metrics["loss"]: 0.3f}  | Training accuracy: {train_metrics["accuracy"]: 0.3f} | Training F1-score: {train_metrics["f1_score"]: 0.3f}  || Validation loss: {val_metrics["loss"]: 0.3f}  | Validation accuracy: {val_metrics["accuracy"]: 0.3f} | Validation F1-score: {val_metrics["f1_score"]: 0.3f}')
+        pbar.write(f'Epoch: {epoch}, lr={current_lr}, epoch time: {epoch_time}s, nfes: {epoch_nfes}, bnfes: {epoch_bnfes}, total nfes: {total_nfes}  || Training loss: {train_metrics["loss"]: 0.5f}  | Training accuracy: {train_metrics["accuracy"]: 0.5f} | Training F1-score: {train_metrics["f1_score"]: 0.5f}  || Validation loss: {val_metrics["loss"]: 0.5f}  | Validation accuracy: {val_metrics["accuracy"]: 0.5f} | Validation F1-score: {val_metrics["f1_score"]: 0.5f}')
         output.append(dict(epoch=epoch, lr=current_lr, epoch_time=epoch_time, nfes=epoch_nfes, bnfes=epoch_bnfes, total_nfes=total_nfes, train_metrics=train_metrics, val_metrics=val_metrics))
 
         # Log train and val metrics
