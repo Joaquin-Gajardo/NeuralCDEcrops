@@ -460,7 +460,7 @@ class ODERNN(torch.nn.Module): # From Kidger 2020
         return h
 
     def evolve(self, h, time_diff):
-        t = torch.Tensor([0, time_diff.item()], device=time_diff.device)
+        t = torch.Tensor([0, time_diff.item()]).to(time_diff.device)
         out = torchdiffeq.odeint_adjoint(func=self.func, y0=h, t=t, method='rk4', rtol=self.rtol, atol=self.atol)
         return out[1]
 
