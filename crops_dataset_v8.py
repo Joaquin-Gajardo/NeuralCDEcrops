@@ -639,31 +639,31 @@ def evaluate_metrics(dataloader, model, times, interpolation_method, device, los
     
 def parse_args():
     parser = argparse.ArgumentParser()	
-    parser.add_argument("--data-root", type=str, default="C:\\Users\\jukin\\Desktop\\Ms_Thesis\\Data\\Crops\\processed", help='[default=%(default)s].')
+    parser.add_argument("--data_root", type=str, default="C:\\Users\\jukin\\Desktop\\Ms_Thesis\\Data\\Crops\\processed", help='[default=%(default)s].')
     parser.add_argument("--noskip", default=False, action="store_true", help='Activate for using even cloudy observations [default=%(default)s].')
     parser.add_argument("--reduced", default=False, action="store_true", help='Use only a fraction of the dataset features (for Crops dataset) [default=%(default)s].')
-    parser.add_argument("--time-default", default=False, action="store_true", help='To not pass the original dataset timestamps to the interpolation and model and use the default equally spaced time array of torchde interpolation methods [default=%(default)s].')
-    parser.add_argument("--interpol-method", type=str, default='cubic', choices=['cubic', 'linear', 'rectilinear'], help='Interpolation method to use for creating continous data path X [default=%(default)s].')
+    parser.add_argument("--time_default", default=False, action="store_true", help='To not pass the original dataset timestamps to the interpolation and model and use the default equally spaced time array of torchde interpolation methods [default=%(default)s].')
+    parser.add_argument("--interpol_method", type=str, default='cubic', choices=['cubic', 'linear', 'rectilinear'], help='Interpolation method to use for creating continous data path X [default=%(default)s].')
     parser.add_argument("--ntrain", type=int, default=None, help='Number of train samples [default=%(default)s].')
     parser.add_argument("--nval", type=int, default=None, help='Number of validation samples [default=%(default)s].')
-    parser.add_argument("--max-epochs", type=int, default=20, help='Maximum number of epochs [default=%(default)s].')
+    parser.add_argument("--max_epochs", type=int, default=20, help='Maximum number of epochs [default=%(default)s].')
     parser.add_argument("--lr", type=float, default=0.001, help='Optimizer initial learning rate [default=%(default)s].')
     parser.add_argument("--BS", type=int, default=600, help='Batch size for train, validation and test sets [default=%(default)s].')
-    parser.add_argument("--num-workers", type=int, default=0, help='Num workers for dataloaders [default=%(default)s].')
+    parser.add_argument("--num_workers", type=int, default=0, help='Num workers for dataloaders [default=%(default)s].')
     parser.add_argument("--HC", type=int, default=80, help='Hidden channels. Size of the hidden state in NCDE or RNN models [default=%(default)s].')
     parser.add_argument("--HL", type=int, default=1, help='Number of hidden layers in the vector field or of RNN layers if an RNN model is selected [default=%(default)s].')
     parser.add_argument("--HU", type=int, default=128, help='Number of hidden units in the vector field [default=%(default)s].')
-    parser.add_argument("--layer-norm", default=False, action="store_true", help='Apply layer norm to before every activation function [default=%(default)s].')
-    parser.add_argument("--ES-patience", type=int, default=5, help='Early stopping number of epochs to wait before stopping [default=%(default)s].')
-    parser.add_argument("--lr-decay", default=False, help='Add learning rate decay if when no improvement of training accuracy [default=%(default)s].')
-    parser.add_argument("--lr-decay-factor", type=float, default=0.99, help='Learning rate decay factor [default=%(default)s].')
+    parser.add_argument("--layer_norm", default=False, action="store_true", help='Apply layer norm to before every activation function [default=%(default)s].')
+    parser.add_argument("--ES_patience", type=int, default=5, help='Early stopping number of epochs to wait before stopping [default=%(default)s].')
+    parser.add_argument("--lr_decay", default=False, action="store_true", help='Add learning rate decay if when no improvement of training accuracy [default=%(default)s].')
+    parser.add_argument("--lr_decay_factor", type=float, default=0.5, help='Learning rate decay factor [default=%(default)s].')
     parser.add_argument("--regularization", default=False, action="store_true", help='Add L2 regularization to the loss function [default=%(default)s].')
-    parser.add_argument("--pin-memory", default=False, action="store_true", help='Pass pin memory option to torch.utils.data.DataLoader [default=%(default)s].')
+    parser.add_argument("--pin_memory", default=False, action="store_true", help='Pass pin memory option to torch.utils.data.DataLoader [default=%(default)s].')
     parser.add_argument("--save", type=str, default='results', help='Name of new or existing folder where to save results [default=%(default)s].')
     parser.add_argument("--resume", default=None, help='ID of experiment for resuming training. If None runs a new experiment [default=%(default)s].')
-    parser.add_argument("--no-logwandb", default=False, action='store_true', help='Log the run in weights and biases [default=%(default)s].')		
-    parser.add_argument("--fast-dataloader", default=False, action='store_true', help='Try out fast dataloader (with shuffle=False) [default=%(default)s].')		
-    parser.add_argument("--grad-clip", type=float, default=None, help='Max norm to clip gradients to [default=%(default)s].')		
+    parser.add_argument("--no_logwandb", default=False, action='store_true', help='Log the run in weights and biases [default=%(default)s].')		
+    parser.add_argument("--fast_dataloader", default=False, action='store_true', help='Try out fast dataloader (with shuffle=False) [default=%(default)s].')		
+    parser.add_argument("--grad_clip", type=float, default=None, help='Max norm to clip gradients to [default=%(default)s].')		
     parser.add_argument("--model", type=str, default='ncde', choices=['ncde', 'odernn', 'rnn', 'gru', 'lstm'], help='Model to use [default=%(default)s].')
     parser.add_argument("--seminorm", default=False, action="store_true", help='If to use seminorm for 2x speed up odeint adaptative solvers [default=%(default)s].')
     parser.add_argument("--rtol", type=float, default=1e-4, help='Relative tolerance for odeint solvers [default=%(default)s].')
@@ -760,7 +760,7 @@ def main(args):
 
     # Add learning rate decay
     if lr_decay:
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=0, factor=lr_decay_factor, mode='max', verbose=True)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=1, factor=lr_decay_factor, mode='max', verbose=True)
 
     # Add L2 regularization to loss function
     if l2_reg:
@@ -876,11 +876,11 @@ def main(args):
 
         # Update learning rate
         if lr_decay:
-            scheduler.step(train_metrics['accuracy']) # if metric is loss instead, remember to change mode of optimizer to 'min' (default).
+            scheduler.step(val_metrics['f1_score']) # if metric is loss instead, remember to change mode of optimizer to 'min' (default).
             current_lr = scheduler._last_lr[0]	
 
         # Early stopping and checkpointing
-        if val_metrics["f1_score"] >= best_val_f1 * 1.001:
+        if val_metrics["f1_score"] >= best_val_f1 * 1.0001:
             best_val_f1 = val_metrics["f1_score"]
             best_val_f1_epoch = epoch
             best_model = copy.deepcopy(model)
