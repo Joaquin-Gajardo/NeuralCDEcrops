@@ -11,7 +11,7 @@ v5: 23.11.2020. Added histogram for gradients in wandb.
 v6: 07.12.2020. -Added experiment ID and save and load checkpoints. Using noskip datasets and return mask too in get_data function. Log gradients
                 -Modified data preprocessing considerably and interpolation, added option for reduced dataset, times to use, interpolation method and save coeffs as dataset. Plot sample function, build interpolation path function.
 v7: 09.12.2020. Added batch norm and root data path argument. Added tqdm progress bar for measuring epochs speed. Added faster dataloader option.
-v8: 14.12.2020. Added gradient clipping and replaced batch norm by layer norm options. 15.12.2020. Added RNN baseline models and semilog speed up option. 23.12. Added odernn baseline, atol/rtol options and nfes + time logging. 24.12. Changed results save name and argument.
+v8: 14.12.2020. Added gradient clipping and replaced batch norm by layer norm options. 15.12.2020. Added RNN baseline models and semilog speed up option. 23.12. Added odernn baseline, atol/rtol options and nfes + time logging. 24.12. Changed results save name and argument. 29.12. Added activation functions and minor changes to defaults for lr decay.
 """
 
 # Import libraries
@@ -271,7 +271,7 @@ def plot_interpolation_path(coefficients, dataset, times, interpolation_method, 
 
 # Classes for creating the Neural CDE system
 class CDEFunc(torch.nn.Module):
-    def __init__(self, input_channels, hidden_channels, hidden_hidden_channels, num_hidden_layers, layer_norm=False):
+    def __init__(self, input_channels, hidden_channels, hidden_hidden_channels, num_hidden_layers, activation_func='relu', layer_norm=False):
         ''' input_channels are the features in the data and hidden channels
             is an hyperparameter determining the dimensionality of the hidden state z'''
         super(CDEFunc, self).__init__()
@@ -286,18 +286,27 @@ class CDEFunc(torch.nn.Module):
         if self.layer_norm:
             self.ln_in = torch.nn.LayerNorm(hidden_hidden_channels) 
             self.ln_out = torch.nn.LayerNorm(input_channels * hidden_channels)
+        # consider to do activation in-place if memory usage is too intensive
+        if activation_func == 'leaky':
+            self.activation = torch.nn.LeakyReLU()
+        elif activation_func == 'elu':
+            self.activation = torch.nn.ELU()
+        elif activation_func == 'tanh':
+            self.activation = torch.nn.Tanh()
+        else:
+            self.activation = torch.nn.ReLU()
 
     def forward(self, t, z):
         self.nfe += 1
         z = self.linear_in(z)
         if self.layer_norm:
             z = self.ln_in(z)
-        z = z.relu()
+        z = self.activation(z)
         for linear in self.linears:
             z = linear(z)
             if self.layer_norm:
                 z = self.ln_in(z)
-            z = z.relu()
+            z = self.activation(z)
         z = self.linear_out(z)
         if self.layer_norm:
             z = self.ln_out(z)
@@ -653,6 +662,7 @@ def parse_args():
     parser.add_argument("--HC", type=int, default=80, help='Hidden channels. Size of the hidden state in NCDE or RNN models [default=%(default)s].')
     parser.add_argument("--HL", type=int, default=1, help='Number of hidden layers in the vector field or of RNN layers if an RNN model is selected [default=%(default)s].')
     parser.add_argument("--HU", type=int, default=128, help='Number of hidden units in the vector field [default=%(default)s].')
+    parser.add_argument("--activation", type=str, default='relu', choices=['relu', 'leaky', 'elu', 'tanh'],  help='Intermediate activation function in vector field of NCDE (final one is always tanh) [default=%(default)s].')
     parser.add_argument("--layer_norm", default=False, action="store_true", help='Apply layer norm to before every activation function [default=%(default)s].')
     parser.add_argument("--ES_patience", type=int, default=5, help='Early stopping number of epochs to wait before stopping [default=%(default)s].')
     parser.add_argument("--lr_decay", default=False, action="store_true", help='Add learning rate decay if when no improvement of training accuracy [default=%(default)s].')
@@ -689,6 +699,7 @@ def main(args):
     hidden_channels = args_dict['HC']
     num_hidden_layers = args_dict['HL']
     hidden_hidden_channels = args_dict['HU']
+    activation_func = args_dict['activation']
     layer_norm = args_dict['layer_norm']
     early_stopping_patience = args_dict['ES_patience']
     lr_decay = args_dict['lr_decay']
@@ -741,7 +752,7 @@ def main(args):
 
     # Define model
     if use_model == 'ncde':
-        vector_field = CDEFunc(input_channels, hidden_channels, hidden_hidden_channels, num_hidden_layers, layer_norm=layer_norm)
+        vector_field = CDEFunc(input_channels, hidden_channels, hidden_hidden_channels, num_hidden_layers, activation_func, layer_norm=layer_norm)
         model = NeuralCDE(vector_field=vector_field, input_channels=input_channels, hidden_channels=hidden_channels, output_channels=output_channels, layer_norm=layer_norm, seminorm=seminorm, rtol=rtol, atol=atol).to(device)
     elif use_model == 'rnn':
         model = RNN(input_channels=input_channels, hidden_channels=hidden_channels, num_layers=num_hidden_layers, output_channels=output_channels).to(device)
