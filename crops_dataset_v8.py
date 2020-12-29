@@ -701,7 +701,7 @@ def parse_args():
     parser.add_argument("--layer_norm", default=False, action="store_true", help='Apply layer norm to before every activation function [default=%(default)s].')
     parser.add_argument("--ES_patience", type=int, default=5, help='Early stopping number of epochs to wait before stopping [default=%(default)s].')
     parser.add_argument("--lr_decay", default=False, action="store_true", help='Add learning rate decay if when no improvement of training accuracy [default=%(default)s].')
-    parser.add_argument("--lr_decay_factor", type=float, default=0.5, help='Learning rate decay factor [default=%(default)s].')
+    parser.add_argument("--lr_decay_factor", type=float, default=0.5, nargs='*', help='Learning rate decay factor [default=%(default)s].')
     parser.add_argument("--regularization", default=False, action="store_true", help='Add L2 regularization to the loss function [default=%(default)s].')
     parser.add_argument("--pin_memory", default=False, action="store_true", help='Pass pin memory option to torch.utils.data.DataLoader [default=%(default)s].')
     parser.add_argument("--save", type=str, default='results', help='Name of new or existing folder where to save results [default=%(default)s].')
@@ -713,7 +713,7 @@ def parse_args():
     parser.add_argument("--seminorm", default=False, action="store_true", help='If to use seminorm for 2x speed up odeint adaptative solvers [default=%(default)s].')
     parser.add_argument("--rtol", type=float, default=1e-4, help='Relative tolerance for odeint solvers [default=%(default)s].')
     parser.add_argument("--atol", type=float, default=1e-6, help='Absolute tolerace for odeint solvers [default=%(default)s].')
-    parser.add_argument("--grid_search", default=False, action="store_true", help='If passed and there is any argument as a list, then one run will be made for every possible combination (list-argument options are: lr, BS, HC, HL, HU) [default=%(default)s].')
+    parser.add_argument("--grid_search", default=False, action="store_true", help='If passed and there is any argument as a list, then one run will be made for every possible combination (list-argument options are: lr, BS, HC, HL, HU, lrdecay factor) [default=%(default)s].')
     args = parser.parse_args()
     return args
 
@@ -745,7 +745,7 @@ def main(args):
     layer_norm = args_dict['layer_norm']
     early_stopping_patience = args_dict['ES_patience']
     lr_decay = args_dict['lr_decay']
-    lr_decay_factor = args_dict['lr_decay_factor']
+    lr_decay_factor = args_dict['lr_decay_factor'] = args_dict['lr_decay_factor'][0] if isinstance(args_dict['lr_decay_factor'], list) else args_dict['lr_decay_factor']
     l2_reg = args_dict['regularization']
     pin_memory = args_dict['pin_memory']
     results_folder = args_dict['save']
@@ -981,9 +981,9 @@ def main(args):
     if not os.path.exists(results_path):
         os.makedirs(results_path)
     n = 0
-    while glob.glob(os.path.join(results_path, f'*results{n}*_{batch_size}BS_{learning_rate}lr_{hidden_channels}HC_{num_hidden_layers}HL_{hidden_hidden_channels}HU_{interpolation_method}_{timing}{noskip}{red}.txt')):
+    while glob.glob(os.path.join(results_path, f'*results{n}*_{batch_size}BS_{learning_rate}lr_{lr_decay_factor}lrdecay_{hidden_channels}HC_{num_hidden_layers}HL_{hidden_hidden_channels}HU_{interpolation_method}_{timing}{noskip}{red}.txt')):
         n += 1
-    f = open(os.path.join(results_path, f'results{n}_{expID}_{batch_size}BS_{learning_rate}lr_{hidden_channels}HC_{num_hidden_layers}HL_{hidden_hidden_channels}HU_{interpolation_method}_{timing}{noskip}{red}.txt'), 'w')
+    f = open(os.path.join(results_path, f'results{n}_{expID}_{batch_size}BS_{learning_rate}lr_{lr_decay_factor}lrdecay_{hidden_channels}HC_{num_hidden_layers}HL_{hidden_hidden_channels}HU_{interpolation_method}_{timing}{noskip}{red}.txt'), 'w')
     for line in output:
         f.write(str(line) +'\n')
     f.close()
