@@ -11,7 +11,7 @@ v5: 23.11.2020. Added histogram for gradients in wandb.
 v6: 07.12.2020. -Added experiment ID and save and load checkpoints. Using noskip datasets and return mask too in get_data function. Log gradients
                 -Modified data preprocessing considerably and interpolation, added option for reduced dataset, times to use, interpolation method and save coeffs as dataset. Plot sample function, build interpolation path function.
 v7: 09.12.2020. Added batch norm and root data path argument. Added tqdm progress bar for measuring epochs speed. Added faster dataloader option.
-v8: 14.12.2020. Added gradient clipping and replaced batch norm by layer norm options. 15.12.2020. Added RNN baseline models and semilog speed up option. 23.12. Added odernn baseline, atol/rtol options and nfes + time logging. 24.12. Changed results save name and argument. 29.12. Added activation functions and minor changes to defaults for lr decay.
+v8: 14.12.2020. Added gradient clipping and replaced batch norm by layer norm options. 15.12.2020. Added RNN baseline models and semilog speed up option. 23.12. Added odernn baseline, atol/rtol options and nfes + time logging. 24.12. Changed results save name and argument. 29.12. Added activation functions, minor changes to defaults for lr decay and grid search option.
 """
 
 # Import libraries
@@ -36,6 +36,7 @@ import random
 import cProfile
 import tqdm
 import pdb
+from itertools import product
 
 # Check path
 here = pathlib.Path(__file__).resolve().parent
@@ -645,6 +646,40 @@ def evaluate_metrics(dataloader, model, times, interpolation_method, device, los
         # Return metrics
         metrics = dict(dataset_size=total_dataset_size, loss=round(total_loss.item(), 5), accuracy=round(total_accuracy.item(), 5), f1_score=round(total_f1_score.item(), 5))
         return metrics
+
+def grid_search_runs(args):
+    ''' Makes a grid with every combination of the arguments that are passed as a list
+        and one run for each combination.'''
+    def combinations(*args):
+        combinations_list = []
+        for combination in product(*args):
+            combinations_list.append(combination)
+        return combinations_list  
+    grid = []
+    for key, value in vars(args).items():
+        if isinstance(value, list):
+            grid.append((key, value))
+    keys = [param[0] for param in grid]
+    values = [param[1] for param in grid]
+    combinations_list = combinations(*values)
+    print('Grid search combinations:', keys, combinations_list)
+    original_save = args.save
+    if combinations_list is not None:
+        for run, element in enumerate(combinations_list):
+            args_new_dict = vars(args)
+            print(f'\nGrid search run {run + 1}/{len(combinations_list)}:')
+            subfolder_path = '/'
+            for i, key in enumerate(keys):
+                print(f'{key}={element[i]}')
+                args_new_dict[key] = element[i]
+                subfolder_path = subfolder_path + key + str(element[i])
+            args_new_dict['save'] = original_save + subfolder_path                
+            args_new_dict['grid_search'] = False
+            args_new = argparse.Namespace(**args_new_dict)
+            run_start_time = time.time()
+            main(args_new)
+            print('Run time:', round(time.time() - run_start_time, 2), 'seconds')
+        print(f'Total of grid search runs ({len(combinations_list)}) finished after: {round(time.time() - start_time, 2)} seconds')
     
 def parse_args():
     parser = argparse.ArgumentParser()	
@@ -656,12 +691,12 @@ def parse_args():
     parser.add_argument("--ntrain", type=int, default=None, help='Number of train samples [default=%(default)s].')
     parser.add_argument("--nval", type=int, default=None, help='Number of validation samples [default=%(default)s].')
     parser.add_argument("--max_epochs", type=int, default=20, help='Maximum number of epochs [default=%(default)s].')
-    parser.add_argument("--lr", type=float, default=0.001, help='Optimizer initial learning rate [default=%(default)s].')
-    parser.add_argument("--BS", type=int, default=600, help='Batch size for train, validation and test sets [default=%(default)s].')
+    parser.add_argument("--lr", type=float, default=0.001, nargs='*', help='Optimizer initial learning rate [default=%(default)s].')
+    parser.add_argument("--BS", type=int, default=600, nargs='*', help='Batch size for train, validation and test sets [default=%(default)s].')
     parser.add_argument("--num_workers", type=int, default=0, help='Num workers for dataloaders [default=%(default)s].')
-    parser.add_argument("--HC", type=int, default=80, help='Hidden channels. Size of the hidden state in NCDE or RNN models [default=%(default)s].')
-    parser.add_argument("--HL", type=int, default=1, help='Number of hidden layers in the vector field or of RNN layers if an RNN model is selected [default=%(default)s].')
-    parser.add_argument("--HU", type=int, default=128, help='Number of hidden units in the vector field [default=%(default)s].')
+    parser.add_argument("--HC", type=int, default=80, nargs='*', help='Hidden channels. Size of the hidden state in NCDE or RNN models [default=%(default)s].')
+    parser.add_argument("--HL", type=int, default=1, nargs='*', help='Number of hidden layers in the vector field or of RNN layers if an RNN model is selected [default=%(default)s].')
+    parser.add_argument("--HU", type=int, default=128, nargs='*', help='Number of hidden units in the vector field [default=%(default)s].')
     parser.add_argument("--activation", type=str, default='relu', choices=['relu', 'leaky', 'elu', 'tanh'],  help='Intermediate activation function in vector field of NCDE (final one is always tanh) [default=%(default)s].')
     parser.add_argument("--layer_norm", default=False, action="store_true", help='Apply layer norm to before every activation function [default=%(default)s].')
     parser.add_argument("--ES_patience", type=int, default=5, help='Early stopping number of epochs to wait before stopping [default=%(default)s].')
@@ -678,13 +713,20 @@ def parse_args():
     parser.add_argument("--seminorm", default=False, action="store_true", help='If to use seminorm for 2x speed up odeint adaptative solvers [default=%(default)s].')
     parser.add_argument("--rtol", type=float, default=1e-4, help='Relative tolerance for odeint solvers [default=%(default)s].')
     parser.add_argument("--atol", type=float, default=1e-6, help='Absolute tolerace for odeint solvers [default=%(default)s].')
+    parser.add_argument("--grid_search", default=False, action="store_true", help='If passed and there is any argument as a list, then one run will be made for every possible combination (list-argument options are: lr, BS, HC, HL, HU) [default=%(default)s].')
     args = parser.parse_args()
     return args
 
 # Main code
 def main(args):
+    # Grid search over arguments that are a list
+    if args.grid_search:
+        grid_search_runs(args)
+        sys.exit()
+
     # Assign arguments
     args_dict = vars(args)
+    grid_search = args_dict['grid_search']
     absolute_data_directory_path = args_dict['data_root']
     noskip= args_dict['noskip']
     reduced =  args_dict['reduced']
@@ -693,12 +735,12 @@ def main(args):
     ntrain_samples = args_dict['ntrain']
     nval_samples = args_dict['nval']
     num_epochs = args_dict['max_epochs']
-    learning_rate = args_dict['lr']
-    batch_size = args_dict['BS']
+    learning_rate = args_dict['lr'] = args_dict['lr'][0] if isinstance(args_dict['lr'], list) else args_dict['lr']
+    batch_size = args_dict['BS'] = args_dict['BS'][0] if isinstance(args_dict['BS'], list) else args_dict['BS']
     num_workers = args_dict['num_workers']
-    hidden_channels = args_dict['HC']
-    num_hidden_layers = args_dict['HL']
-    hidden_hidden_channels = args_dict['HU']
+    hidden_channels = args_dict['HC'] = args_dict['HC'][0] if isinstance(args_dict['HC'], list) else args_dict['HC']
+    num_hidden_layers = args_dict['HL'] = args_dict['HL'][0] if isinstance(args_dict['HL'], list) else args_dict['HL']
+    hidden_hidden_channels = args_dict['HU'] = args_dict['HU'][0] if isinstance(args_dict['HU'], list) else args_dict['HU']
     activation_func = args_dict['activation']
     layer_norm = args_dict['layer_norm']
     early_stopping_patience = args_dict['ES_patience']
@@ -924,7 +966,6 @@ def main(args):
     print(f'Test accuracy last model (epoch {epoch}): {test_metrics_last_model["accuracy"]}, Test f1 score last model: {test_metrics_last_model["f1_score"]}')
     print(f'Test accuracy best model (epoch {best_val_f1_epoch}): {test_metrics_best_model["accuracy"]}, Test f1 score best model: {test_metrics_best_model["f1_score"]}')
     output.append(dict(test_accuracy=test_metrics_best_model["accuracy"], test_f1_score=test_metrics_best_model["f1_score"], train_time=train_time))
-    print(output)
     
     # Log test metrics
     if logwandb:
@@ -932,6 +973,7 @@ def main(args):
                    'test accuracy (last)': test_metrics_last_model["accuracy"], 'test F1-score (last)': test_metrics_last_model["f1_score"], 'last epoch': epoch})
     
     # Write results to a text file
+    print('Output to text file:\n', output)
     noskip = 'noskip' if noskip else ''
     red = 'red' if reduced else ''
     timing = 'eqspaced' if times is None or interpolation_method == 'rectilinear' else 'irrspaced'
@@ -949,6 +991,6 @@ def main(args):
 if __name__ == '__main__':
     start_time = time.time()
     main(args=parse_args())
-    print(round(time.time() - start_time, 2), 'seconds')
+    print('Run time', round(time.time() - start_time, 2), 'seconds')
 
     
