@@ -647,7 +647,7 @@ def evaluate_metrics(dataloader, model, times, interpolation_method, device, los
         metrics = dict(dataset_size=total_dataset_size, loss=round(total_loss.item(), 5), accuracy=round(total_accuracy.item(), 5), f1_score=round(total_f1_score.item(), 5))
         return metrics
 
-def grid_search_runs(args):
+def grid_search_runs(args, repeats=1):
     ''' Makes a grid with every combination of the arguments that are passed as a list
         and one run for each combination.'''
     def combinations(*args):
@@ -667,20 +667,24 @@ def grid_search_runs(args):
     if combinations_list is not None:
         for run, element in enumerate(combinations_list):
             args_new_dict = vars(args)
-            print(f'\nGrid search run {run + 1}/{len(combinations_list)}:')
+            print(f'\nGrid search combination {run + 1}/{len(combinations_list)}:')
             subfolder_path = '/'
             for i, key in enumerate(keys):
                 print(f'{key}={element[i]}')
                 args_new_dict[key] = element[i]
                 subfolder_path = subfolder_path + key + str(element[i])
             args_new_dict['save'] = original_save + subfolder_path                
-            args_new_dict['grid_search'] = False
+            args_new_dict['grid_search'] = None
             args_new = argparse.Namespace(**args_new_dict)
-            run_start_time = time.time()
-            main(args_new)
-            print('Run time:', round(time.time() - run_start_time, 2), 'seconds')
-        print(f'Total of grid search runs ({len(combinations_list)}) finished after: {round(time.time() - start_time, 2)} seconds')
-    
+            combination_start_time = time.time()
+            for i in range(repeats):
+                repeat_start_time = time.time()
+                if repeats > 1: print(f'\nRepeat: {i + 1}/{repeats}')
+                main(args_new)
+                if repeats > 1: print('Repeat run time:', round(time.time() - repeat_start_time, 2), 'seconds')
+            print('Combination run time:', round(time.time() - combination_start_time, 2), 'seconds')
+        print(f'Total grid search run (n of combinations={len(combinations_list)}) time: {round(time.time() - start_time, 2)} seconds')    
+
 def parse_args():
     parser = argparse.ArgumentParser()	
     parser.add_argument("--data_root", type=str, default="C:\\Users\\jukin\\Desktop\\Ms_Thesis\\Data\\Crops\\processed", help='[default=%(default)s].')
@@ -713,15 +717,16 @@ def parse_args():
     parser.add_argument("--seminorm", default=False, action="store_true", help='If to use seminorm for 2x speed up odeint adaptative solvers [default=%(default)s].')
     parser.add_argument("--rtol", type=float, default=1e-4, help='Relative tolerance for odeint solvers [default=%(default)s].')
     parser.add_argument("--atol", type=float, default=1e-6, help='Absolute tolerace for odeint solvers [default=%(default)s].')
-    parser.add_argument("--grid_search", default=False, action="store_true", help='If passed and there is any argument as a list, then one run will be made for every possible combination (list-argument options are: lr, BS, HC, HL, HU, lrdecay factor) [default=%(default)s].')
+    parser.add_argument("--grid_search", type=int, default=None, help='Number of repetitions for grid search. If passed and there is any argument as a list, then n repetitions will be made for every possible combination (list-argument options are: lr, BS, HC, HL, HU, lrdecay factor) [default=%(default)s].')
     args = parser.parse_args()
     return args
 
 # Main code
 def main(args):
     # Grid search over arguments that are a list
-    if args.grid_search:
-        grid_search_runs(args)
+    if args.grid_search is not None:
+        print('Original arguments:\n',args)
+        grid_search_runs(args, repeats=args.grid_search)
         sys.exit()
 
     # Assign arguments
