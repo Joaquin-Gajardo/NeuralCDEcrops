@@ -90,6 +90,7 @@ def read_folder(metrics, folder_name='', mode='value'):
     return folder_results
 
 def plot_history(metric, folder_name=''):
+    ''' Plots one metric history for each model for all files in a folder. Can't handle subfolders.'''
     folder_results = read_folder(metric, folder_name, mode='history')
     os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE" # work around OMP: Error #15: Initializing libiomp5md.dll, but found libiomp5md.dll already initialized.
     # Reorganize results by model and store series to plot
@@ -131,41 +132,45 @@ def plot_history(metric, folder_name=''):
     plt.show()
 
 def table(metrics, folder_name=''):
-    "metrics: list of metrics to print"
-    folder_results = read_folder(metrics, folder_name)
-    # Reorganize results by model
-    models = set(folder_results['models'])
-    models_results = {model: {metric: [] for metric in metrics} for model in models}
-    param_results = {model: {'params': []} for model in models}
-    nruns = len(next(iter(folder_results.values())))
-    for run in range(nruns):
-        model = folder_results['models'][run]
-        param_results[model]['params'].append(folder_results['params'][run])
-        for metric in metrics:
-            models_results[model][metric].append(folder_results[metric][run])
+    "metrics: list of metrics to print. Can handle subfolders."
+    for folder in os.listdir(folder_name):
+        folder_path = os.path.join(folder_name, folder)
+        print('Folder:', folder_path)
+        folder_results = read_folder(metrics, folder_path)
+        # Reorganize results by model
+        models = set(folder_results['models'])
+        models_results = {model: {metric: [] for metric in metrics} for model in models}
+        param_results = {model: {'params': []} for model in models}
+        nruns = len(next(iter(folder_results.values())))
+        for run in range(nruns):
+            model = folder_results['models'][run]
+            param_results[model]['params'].append(folder_results['params'][run])
+            for metric in metrics:
+                models_results[model][metric].append(folder_results[metric][run])
 
-    # Print summary table for each metric and model
-    min_length = min([len(next(iter(models_results[model].values()))) for model in models_results]) # nruns for model with least of them
-    print('Num samples:', min_length)
-    for metric in metrics:
-        print(f'\n{metric.capitalize()}' + ' (s):' if metric == 'train time' else f'\n{metric.capitalize()}:')
-        sorted_results = []
-        for model, content in models_results.items():
-            if 'nfes' in metric:
-                sorted_results.append((model, torch.Tensor(content[metric]).sum(dim=1))) # sum nfes over epochs
-            else:
-                sorted_results.append((model, torch.Tensor(content[metric])))
-        sorted_results.sort(key=lambda x: -x[1].mean())
-        for model, values in sorted_results:
-            values = values[:min_length]
-            params = np.mean(param_results[model]['params'], dtype=int) # average should be redundant
-            print(f'{model.upper() :6}: mean: {values.mean():.3f} std: {values.std():.3f} min: {values.min():.3f} max: {values.max():.3f}| params: {params}')
+        # Print summary table for each metric and model
+        min_length = min([len(next(iter(models_results[model].values()))) for model in models_results]) # nruns for model with least of them
+        print('Num samples:', min_length)
+        for metric in metrics:
+            print(f'\n{metric.capitalize()}' + ' (s):' if metric == 'train time' else f'\n{metric.capitalize()}:')
+            sorted_results = []
+            for model, content in models_results.items():
+                if 'nfes' in metric:
+                    sorted_results.append((model, torch.Tensor(content[metric]).sum(dim=1))) # sum nfes over epochs
+                else:
+                    sorted_results.append((model, torch.Tensor(content[metric])))
+            sorted_results.sort(key=lambda x: -x[1].mean())
+            for model, values in sorted_results:
+                values = values[:min_length]
+                params = np.mean(param_results[model]['params'], dtype=int) # average should be redundant
+                print(f'{model.upper() :6}: mean: {values.mean():.3f} std: {values.std():.3f} min: {values.min():.3f} max: {values.max():.3f}| params: {params}')
+        print('\n')
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--metrics', default=["test acc", "test f1"], nargs='+', choices=["test acc", "test f1", "train time", "nfes", "bnfes", "total nfes"], help='List of metrics to compute in a table. If plot option only the first metric is considered [default=%(default)s].' )
     parser.add_argument('--plot-metric', type=str, default="train loss", choices=["epoch times", "nfes", "bnfes", "total nfes", "train loss", "train acc", "train f1", "val loss", "val acc", "val f1"], help='Metric to plot [default=%(default)s].' )
-    parser.add_argument('--form', type=str, default='plot', choices=['table', 'plot'], help='Show results as a table or a plot [default=%(default)s].')
+    parser.add_argument('--form', type=str, default='table', choices=['table', 'plot'], help='Show results as a table or a plot [default=%(default)s].')
     parser.add_argument('--folder', type=str, default='results', help='Folder where to read the experiments results from (all models results can be there) [default=current directory].')
     args = parser.parse_args()
 
