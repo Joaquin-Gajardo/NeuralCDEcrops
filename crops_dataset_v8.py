@@ -970,12 +970,23 @@ def main(args):
     test_metrics_best_model = evaluate_metrics(test_dataloader, best_model, times, interpolation_method, device, loss_fn=loss_fn)
     print(f'Test accuracy last model (epoch {epoch}): {test_metrics_last_model["accuracy"]}, Test f1 score last model: {test_metrics_last_model["f1_score"]}')
     print(f'Test accuracy best model (epoch {best_val_f1_epoch}): {test_metrics_best_model["accuracy"]}, Test f1 score best model: {test_metrics_best_model["f1_score"]}')
-    output.append(dict(test_accuracy=test_metrics_best_model["accuracy"], test_f1_score=test_metrics_best_model["f1_score"], train_time=train_time))
     
     # Log test metrics
     if logwandb:
         wandb.log({'test accuracy (best)': test_metrics_best_model["accuracy"], 'test F1-score (best)': test_metrics_best_model["f1_score"], 'best epoch': best_val_f1_epoch,
                    'test accuracy (last)': test_metrics_last_model["accuracy"], 'test F1-score (last)': test_metrics_last_model["f1_score"], 'last epoch': epoch})
+
+    # Check that best model is indeed better than last one
+    if test_metrics_best_model["f1_score"] >= test_metrics_last_model["f1_score"] and test_metrics_best_model["accuracy"] >= test_metrics_last_model["accuracy"]:
+        test_acc = test_metrics_best_model["accuracy"]
+        test_f1 = test_metrics_best_model["f1_score"]
+    else: # save checkpoint of last model and save these metrics instead 
+        test_acc = test_metrics_last_model["accuracy"]
+        test_f1 = test_metrics_last_model["f1_score"]
+        checkpoint_path = os.path.join(checkpoints_path, f'exp_{expID}_checkpoint.pt')
+        torch.save({'epoch': epoch, 'model_state_dict': model.state_dict(), 'val_loss': val_metrics["loss"], 'args_dict': args_dict}, checkpoint_path)
+
+    output.append(dict(test_accuracy=test_acc, test_f1_score=test_f1, train_time=train_time))
     
     # Write results to a text file
     print('Output to text file:\n', output)
