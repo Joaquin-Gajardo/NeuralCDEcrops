@@ -11,7 +11,7 @@ v5: 23.11.2020. Added histogram for gradients in wandb.
 v6: 07.12.2020. -Added experiment ID and save and load checkpoints. Using noskip datasets and return mask too in get_data function. Log gradients
                 -Modified data preprocessing considerably and interpolation, added option for reduced dataset, times to use, interpolation method and save coeffs as dataset. Plot sample function, build interpolation path function.
 v7: 09.12.2020. Added batch norm and root data path argument. Added tqdm progress bar for measuring epochs speed. Added faster dataloader option.
-v8: 14.12.2020. Added gradient clipping and replaced batch norm by layer norm options. 15.12.2020. Added RNN baseline models and semilog speed up option. 23.12. Added odernn baseline, atol/rtol options and nfes + time logging. 24.12. Changed results save name and argument. 29.12. Added activation functions, minor changes to defaults for lr decay and grid search option.
+v8: 14.12.2020. Added gradient clipping and replaced batch norm by layer norm options. 15.12.2020. Added RNN baseline models and semilog speed up option. 23.12. Added odernn baseline, atol/rtol options and nfes + time logging. 24.12. Changed results save name and argument. 29.12. Added activation functions, minor changes to defaults for lr decay and grid search option. 05.01. Change in test metrics best model and to regularization argument.
 """
 
 # Import libraries
@@ -46,8 +46,14 @@ warnings.filterwarnings("ignore")
 
 ################################################################################################
 # Swiscrop labels
-label_names = ['No Label','Maize', 'Meadow', 'Pasture', 'Potatoes', 'Spelt', 'Sugarbeets', 'Sunflowers', 'Vegetables', 'Vines', 'Wheat', 'Winter barley', 'Winter rapeseed', 'Winter wheat']
-labels = [0, 1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13]
+swisscrop_labels_names = ['No Label','Maize', 'Meadow', 'Pasture', 'Potatoes', 'Spelt', 'Sugarbeets', 'Sunflowers', 'Vegetables', 'Vines', 'Wheat', 'Winter barley', 'Winter rapeseed', 'Winter wheat']
+swisscrop_labels = [0, 1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13]
+
+#make label Tags
+TUM_labels_names = [ "other", "corn", "meadow", "asparagus", "rape", "hop", "summer oats", "winter spelt", "fallow", "winter wheat",
+                    "winter barley", "winter rye", "beans", "winter triticale", "summer barley", "peas", "potatoe", "soybeans", "sugar beets" ]
+TUM_labels_dict = {k: i for i, k in enumerate(TUM_labels_names)}
+reverse_TUM_labels_dict = {v: k for k, v in TUM_labels_dict.items()}
 
 # Get processed data from TUM dataset (TODO add script with Nando's code of data processing!)
 def get_data(absolute_data_directory_path, use_noskip=True, reduced=False, ntrain=None, nval=None, use_model='ncde'):
@@ -585,7 +591,7 @@ def count_parameters(model):
     """Counts the number of parameters in a model."""
     return sum(param.numel() for param in model.parameters() if param.requires_grad_)
 
-def add_weight_regularisation(loss_fn, model, scaling=0.03):
+def add_weight_regularisation(loss_fn, model, scaling=0.01):
     """ Adds L2-regularisation to the loss function """
     def new_loss_fn(true_label, label_predictions):
         total_loss = loss_fn(true_label, label_predictions)
@@ -609,7 +615,7 @@ def compute_total_matches(labels, predictions):
 def compute_f1_score(labels, predictions):
     thresholded_pred = torch.argmax(predictions, dim=1).detach().cpu()
     labels_max_indices = torch.argmax(labels, dim=1).detach().cpu()
-    f1_score = sklearn.metrics.f1_score(labels_max_indices, thresholded_pred, average='macro')
+    f1_score = sklearn.metrics.f1_score(labels_max_indices, thresholded_pred, average=None) # returns per-class F1 scores, taking the mean of this is eq. to average='macro'
     return f1_score
 
 def evaluate_metrics(dataloader, model, times, interpolation_method, device, loss_fn=compute_multiclass_cross_entropy):
@@ -644,7 +650,7 @@ def evaluate_metrics(dataloader, model, times, interpolation_method, device, los
         total_f1_score = compute_f1_score(batch_y_all, pred_y_all)
         
         # Return metrics
-        metrics = dict(dataset_size=total_dataset_size, loss=round(total_loss.item(), 5), accuracy=round(total_accuracy.item(), 5), f1_score=round(total_f1_score.item(), 5))
+        metrics = dict(dataset_size=total_dataset_size, loss=round(total_loss.item(), 5), accuracy=round(total_accuracy.item(), 5), f1_score=round(total_f1_score.mean().item(), 5), perclass_f1= total_f1_score.round(5))
         return metrics
 
 def grid_search_runs(args, repeats=1):
@@ -706,7 +712,7 @@ def parse_args():
     parser.add_argument("--ES_patience", type=int, default=5, help='Early stopping number of epochs to wait before stopping [default=%(default)s].')
     parser.add_argument("--lr_decay", default=False, action="store_true", help='Add learning rate decay if when no improvement of training accuracy [default=%(default)s].')
     parser.add_argument("--lr_decay_factor", type=float, default=0.5, nargs='*', help='Learning rate decay factor [default=%(default)s].')
-    parser.add_argument("--regularization", default=False, action="store_true", help='Add L2 regularization to the loss function [default=%(default)s].')
+    parser.add_argument("--regularization", type=float, default=None, help='If not None adds L2 regularization to the loss function with scaling specified by the argument [default=%(default)s].')
     parser.add_argument("--pin_memory", default=False, action="store_true", help='Pass pin memory option to torch.utils.data.DataLoader [default=%(default)s].')
     parser.add_argument("--save", type=str, default='results', help='Name of new or existing folder where to save results [default=%(default)s].')
     parser.add_argument("--resume", default=None, help='ID of experiment for resuming training. If None runs a new experiment [default=%(default)s].')
@@ -751,7 +757,7 @@ def main(args):
     early_stopping_patience = args_dict['ES_patience']
     lr_decay = args_dict['lr_decay']
     lr_decay_factor = args_dict['lr_decay_factor'] = args_dict['lr_decay_factor'][0] if isinstance(args_dict['lr_decay_factor'], list) else args_dict['lr_decay_factor']
-    l2_reg = args_dict['regularization']
+    l2_reg_scaling = args_dict['regularization']
     pin_memory = args_dict['pin_memory']
     results_folder = args_dict['save']
     checkpoint_expID = args_dict['resume']
@@ -821,8 +827,8 @@ def main(args):
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=1, factor=lr_decay_factor, mode='max', verbose=True)
 
     # Add L2 regularization to loss function
-    if l2_reg:
-        loss_fn = add_weight_regularisation(loss_fn, model)
+    if l2_reg_scaling is not None:
+        loss_fn = add_weight_regularisation(loss_fn, model, scaling=l2_reg_scaling)
 
     # Track models gradients with logger
     if logwandb:
@@ -966,27 +972,28 @@ def main(args):
     #model = best_model
     #del best_model # to release memory
     model.eval()
-    test_metrics_last_model = evaluate_metrics(test_dataloader, model, times, interpolation_method, device, loss_fn=loss_fn)
     test_metrics_best_model = evaluate_metrics(test_dataloader, best_model, times, interpolation_method, device, loss_fn=loss_fn)
-    print(f'Test accuracy last model (epoch {epoch}): {test_metrics_last_model["accuracy"]}, Test f1 score last model: {test_metrics_last_model["f1_score"]}')
-    print(f'Test accuracy best model (epoch {best_val_f1_epoch}): {test_metrics_best_model["accuracy"]}, Test f1 score best model: {test_metrics_best_model["f1_score"]}')
+    test_metrics_last_model = evaluate_metrics(test_dataloader, model, times, interpolation_method, device, loss_fn=loss_fn)
     
-    # Log test metrics
-    if logwandb:
-        wandb.log({'test accuracy (best)': test_metrics_best_model["accuracy"], 'test F1-score (best)': test_metrics_best_model["f1_score"], 'best epoch': best_val_f1_epoch,
-                   'test accuracy (last)': test_metrics_last_model["accuracy"], 'test F1-score (last)': test_metrics_last_model["f1_score"], 'last epoch': epoch})
-
-    # Check that best model is indeed better than last one
+    # Check that best model is indeed better than the last one
     if test_metrics_best_model["f1_score"] >= test_metrics_last_model["f1_score"] and test_metrics_best_model["accuracy"] >= test_metrics_last_model["accuracy"]:
         test_acc = test_metrics_best_model["accuracy"]
         test_f1 = test_metrics_best_model["f1_score"]
+        best_epoch = best_val_f1_epoch
     else: # save checkpoint of last model and save these metrics instead 
         test_acc = test_metrics_last_model["accuracy"]
         test_f1 = test_metrics_last_model["f1_score"]
+        best_epoch = epoch
         checkpoint_path = os.path.join(checkpoints_path, f'exp_{expID}_checkpoint.pt')
         torch.save({'epoch': epoch, 'model_state_dict': model.state_dict(), 'val_loss': val_metrics["loss"], 'args_dict': args_dict}, checkpoint_path)
 
-    output.append(dict(test_accuracy=test_acc, test_f1_score=test_f1, train_time=train_time))
+    print(f'Test accuracy best model (epoch {best_epoch}): {test_acc}, Test f1 score best model: {test_f1}')
+
+    # Log test metrics
+    if logwandb:
+        wandb.log({'test accuracy (best)': test_acc, 'test F1-score (best)': test_f1, 'best epoch': best_epoch})
+
+    output.append(dict(best_epoch=best_epoch, test_accuracy=test_acc, test_f1_score=test_f1, train_time=train_time))
     
     # Write results to a text file
     print('Output to text file:\n', output)
