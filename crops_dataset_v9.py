@@ -6,40 +6,52 @@ Versions:
 v1: 04.11.2020. Added F1 score, evaluate metrics functions, clearer output.
 v2: 06.11.2020. Added early stopping, modified architecture, L2 regularization, named experiments output, modified get data function to include clouds mask, added some helper functions.
 v3: 09.11.2020. Added argparse, modified early stopping conditions.
-v4: 11.09.2020. LR as an argument and LR decay, added wandb logger. 16.11.2020 lr decay as an option and improved save text file name format, added samples option. 18.11.2020 Added num workers. Changed eps to 10^-10. 20.11.2020. Added print missing values rate if clouds mask options in data.
-v5: 20.11.2020. Added experiment ID and save and load checkpoints. Added memory pinning. Using noskip datasets and return mask too in get_data function. Log gradients.
-v6: 06.12.2020. Modified data preprocessing and interpolation, added option for reduced dataset, times to use, interpolation method and save coeffs as dataset.
+v4: 11.09.2020. LR as an argument and LR decay, added wandb logger. 16.11.2020 lr decay as an option and improved save text file name format, added samples option. 18.11.2020 Added num workers. Changed eps to 10^-10. 20.11.2020. Added memory pinning.
+v5: 23.11.2020. Added histogram for gradients in wandb.
+v6: 07.12.2020. -Added experiment ID and save and load checkpoints. Using noskip datasets and return mask too in get_data function. Log gradients
+                -Modified data preprocessing considerably and interpolation, added option for reduced dataset, times to use, interpolation method and save coeffs as dataset. Plot sample function, build interpolation path function.
 v7: 09.12.2020. Added batch norm and root data path argument. Added tqdm progress bar for measuring epochs speed. Added faster dataloader option.
-v8: 14.12.2020. Added gradient clipping and replaced batch norm by layer norm options. 15.12.2020. Added RNN baseline models and semilog speed up option. 23.12. Added odernn baseline, atol/rtol options and nfes + time logging. 24.12. Changed results save name and argument. 29.12. Added activation functions, minor changes to defaults for lr decay and grid search option. 
-v9: 05.01.2021. Change in test metrics best model and to regularization argument. 11.01. Added confusion matrix and per class F1 scores in evaluate metrics function. Changes at test time. 13.01. Output as dictionary and save to json file.
+v8: 14.12.2020. Added gradient clipping and replaced batch norm by layer norm options. 15.12.2020. Added RNN baseline models and semilog speed up option. 23.12. Added odernn baseline, atol/rtol options and nfes + time logging. 24.12. Changed results save name and argument. 29.12. Added activation functions, minor changes to defaults for lr decay and grid search option. 05.01. Change in test metrics best model and to regularization argument.
+v9: 05.01.2021. Change in test metrics best model and to regularization argument. 11.01. Added confusion matrix and per class F1 scores in evaluate metrics function. Changes at test time. 13.01. Output as dictionary and save to json file. 15.01. Changes in data preprocessing, added observational mask as option (intensity argument). Added only CELU as option for activation functions, fixed layer norm in CDEFunc, some pep8 conformity.
 """
 
-# Import libraries
+###  Import libraries
+# Standard 
 import numpy as np
-import math
-import torch
-import torchdiffeq
-import torchcde
+import pandas as pd
+
+# Visualizations
 import matplotlib.pyplot as plt
 import seaborn as sn
-import pandas as pd
-import wandb
+
+# Data
 import h5py
+import json
+
+# General utility
+import warnings
 import argparse
-import sklearn.metrics
+import itertools
 import copy
 import time
+import random
+import math
+import pdb
+import tqdm
+
+# System
 import os
 import sys
 import glob
 import pathlib
-import warnings
-import random
-import cProfile
-import tqdm
-import pdb
-from itertools import product
-import json
+
+# ML
+import sklearn.metrics
+import torch
+import torchdiffeq
+import torchcde
+import wandb
+
 
 # Check path
 here = pathlib.Path(__file__).resolve().parent
@@ -47,19 +59,21 @@ here = pathlib.Path(__file__).resolve().parent
 # Ignore warnings
 warnings.filterwarnings("ignore")
 
+
 ################################################################################################
 # Swiscrop labels
 swisscrop_labels_names = ['No Label','Maize', 'Meadow', 'Pasture', 'Potatoes', 'Spelt', 'Sugarbeets', 'Sunflowers', 'Vegetables', 'Vines', 'Wheat', 'Winter barley', 'Winter rapeseed', 'Winter wheat']
 swisscrop_labels = [0, 1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13]
 
-#make label Tags
+# TUM labels
 TUM_labels_names = [ "other", "corn", "meadow", "asparagus", "rape", "hop", "summer oats", "winter spelt", "fallow", "winter wheat",
                     "winter barley", "winter rye", "beans", "winter triticale", "summer barley", "peas", "potatoe", "soybeans", "sugar beets" ]
 TUM_labels_dict = {k: i for i, k in enumerate(TUM_labels_names)}
 reverse_TUM_labels_dict = {v: k for k, v in TUM_labels_dict.items()}
 
+
 # Get processed data from TUM dataset (TODO add script with Nando's code of data processing!)
-def get_data(absolute_data_directory_path, use_noskip=True, reduced=False, ntrain=None, nval=None, use_model='ncde'):
+def get_data(absolute_data_directory_path, use_noskip=False, reduced=False, ntrain=None, nval=None, use_model='ncde', time_as_channel=True, intensity=False):
     # Read dataset
     noskip = 'noskip' if use_noskip else ''
     
@@ -84,6 +98,17 @@ def get_data(absolute_data_directory_path, use_noskip=True, reduced=False, ntrai
     data['val_mask'] = torch.Tensor(val_dataset['mask'][:])
     data['test_mask'] = torch.Tensor(test_dataset['mask'][:])
 
+    # Return only sample of data if asked for
+    data['train_data'] = data['train_data'][:ntrain]
+    data['train_labels'] = data['train_labels'][:ntrain]
+    data['train_mask'] = data['train_mask'][:ntrain]
+    data['val_data'] = data['val_data'][:nval]
+    data['val_labels'] = data['val_labels'][:nval]
+    data['val_mask'] = data['val_mask'][:nval]
+    data['test_data'] = data['test_data'][:nval]
+    data['test_labels'] = data['test_labels'][:nval]
+    data['test_mask'] = data['test_mask'][:nval]
+
     # Reduce data features if required (only keep features of central pixel of the 3x3 neighbourhood)
     if reduced:
         data['train_data'] = data['train_data'][:, :, 4:-1:9]
@@ -95,8 +120,7 @@ def get_data(absolute_data_directory_path, use_noskip=True, reduced=False, ntrai
         data['test_mask'] = data['test_mask'][:, :, 4:-1:9]
 
     # Impute NaNs where mask is 0 (non-observed pixel due to bad weather)	
-    # Get mask data and transform to boolean to avoid matching numbers¨
-    if use_model == 'ncde':
+    if use_model == 'ncde': # TODO: just remove this if-else clause if later I decide to do "same imputation method for all models" (interpolation and padding last and first observed value which is donde by torchcde)
         train_mask = data['train_mask'].to(bool)
         val_mask = data['val_mask'].to(bool)
         test_mask = data['test_mask'].to(bool)
@@ -106,32 +130,23 @@ def get_data(absolute_data_directory_path, use_noskip=True, reduced=False, ntrai
         data['val_data'][val_mask == False] = float('nan')
         data['test_data'][test_mask == False] = float('nan')
 
-        # Append time as a feature at the beginning of last dimension (features dimension)
+        # Concatenate observational mask of features as extra features
+        if intensity:
+            for i in ['train_data', 'val_data', 'test_data']:
+                obs_mask = (~torch.isnan(data[i])).cumsum(dim=-2) # cumsum in time dimension (cumulative mask, when doing dX/dt just the observational mask will be recovered)
+                data[i] = torch.cat([data[i], obs_mask], dim=-1) # concatenate in features dimension
+    else: # baselines
+        if intensity: # TODO: let's try first as before, with other models having 0s when missing values (otherwise just fill missing values with interpolation for other models, like Kidger. In that case erase this else block and remove the if statement above)
+            for i in ['train_data', 'val_data', 'test_data']:
+                obs_mask = (data[i] != 0.0) # a simple observational mask of 0s and 1s
+                data[i] = torch.cat([data[i], obs_mask], dim=-1) # concatenate in features dimension
+
+    # Concatenate time as the first feature
+    if time_as_channel:
         for i in ['train_data', 'val_data', 'test_data']:
             t = data['times'].unsqueeze(0).repeat(data[i].size(0), 1).unsqueeze(-1)
             data[i] = torch.cat([t, data[i]], dim=-1)
 
-        # Padd end of sequences with fill forward last observed row
-        data['train_data'] = fill_last_nonnan_forward(data['train_data'])
-        data['val_data'] = fill_last_nonnan_forward(data['val_data'])
-        data['test_data'] = fill_last_nonnan_forward(data['test_data'])
-
-        # Padd beginning of sequences with fill backward first observed row
-        data['train_data'] = fill_first_nonnan_backward(data['train_data'])
-        data['val_data'] = fill_first_nonnan_backward(data['val_data'])
-        data['test_data'] = fill_first_nonnan_backward(data['test_data'])
-
-    # Return only sample of data if asked for
-    data['train_data'] = data['train_data'][:ntrain]
-    data['train_labels'] = data['train_labels'][:ntrain]
-    data['train_mask'] = data['train_mask'][:ntrain]
-    data['val_data'] = data['val_data'][:nval]
-    data['val_labels'] = data['val_labels'][:nval]
-    data['val_mask'] = data['val_mask'][:nval]
-    data['test_data'] = data['test_data'][:nval]
-    data['test_labels'] = data['test_labels'][:nval]
-    data['test_mask'] = data['test_mask'][:nval]
-    
     # Print missing values rate
     train_missing_rate = get_missing_values_rate(data['train_data'])
     val_missing_rate = get_missing_values_rate(data['val_data'])
@@ -142,35 +157,13 @@ def get_data(absolute_data_directory_path, use_noskip=True, reduced=False, ntrai
 
     return data
 
-def fill_last_nonnan_forward(x): # warning: it only works for tensors of ndim=3 and to fill in the dim=1.
-    if isinstance(x, torch.Tensor):
-        x = x.numpy()
-    tmp = np.flip(x, axis=1)
-    idxs = np.argmax(~np.isnan(tmp), axis=1)
-    idx = np.min(idxs[:, 1:], axis=1)
-    for i, sample in enumerate(tmp):
-        tmp[i, :idx[i], :] = np.tile(sample[idx[i], :], (idx[i], 1))
-    x_mod = np.flip(tmp, axis=1)
-    x_mod = torch.from_numpy(x)
-    assert isinstance(x_mod, torch.Tensor)
-    return x_mod
-
-def fill_first_nonnan_backward(x): # warning: it only works for tensors of ndim=3 and to fill in the dim=1. Also inefficient because of for loop.
-    if isinstance(x, torch.Tensor):
-        x = x.numpy()
-    idxs = np.argmax(~np.isnan(x), axis=1)
-    idx = np.min(idxs[:, 1:], axis=1)
-    for i, sample in enumerate(x):
-        x[i, :idx[i], :] = np.tile(sample[idx[i], :], (idx[i], 1))
-    x_mod = torch.from_numpy(x)
-    assert isinstance(x_mod, torch.Tensor)
-    return x_mod
 
 def get_missing_values_rate(data_tensor):
     ''' Helper function for computing the missing values rate.'''
     assert isinstance(data_tensor, torch.Tensor)
     missing_rate = data_tensor[torch.isnan(data_tensor)].numel()/data_tensor.numel()
     return missing_rate
+
 
 def get_interpolation_coeffs(directory, data, times, use_noskip, reduced, interpolation_method='cubic'):
     # Create new folder for storing coefficients as datasets (interpolation is expensive)
@@ -187,9 +180,9 @@ def get_interpolation_coeffs(directory, data, times, use_noskip, reduced, interp
     coefficients = {}
     if not os.path.exists(absolute_coeffs_filename_path):
         if interpolation_method == 'cubic':
-            coefficients['train_coeffs'] = torchcde.natural_cubic_spline_coeffs(data['train_data'], t=times)
-            coefficients['val_coeffs'] = torchcde.natural_cubic_spline_coeffs(data['val_data'], t=times)
-            coefficients['test_coeffs'] = torchcde.natural_cubic_spline_coeffs(data['test_data'], t=times)
+            coefficients['train_coeffs'] = torchcde.natural_cubic_coeffs(data['train_data'], t=times)
+            coefficients['val_coeffs'] = torchcde.natural_cubic_coeffs(data['val_data'], t=times)
+            coefficients['test_coeffs'] = torchcde.natural_cubic_coeffs(data['test_data'], t=times)
         
         elif interpolation_method == 'linear':
             coefficients['train_coeffs'] = torchcde.linear_interpolation_coeffs(data['train_data'], t=times)
@@ -228,6 +221,7 @@ def get_interpolation_coeffs(directory, data, times, use_noskip, reduced, interp
     print(f'Test data interpolation coefficients shape: {test_coeffs.shape}')
     return coefficients
 
+
 def build_data_path(coeffs, times, interpolation_method):
     if interpolation_method == 'cubic':
         X = torchcde.NaturalCubicSpline(coeffs, t=times)
@@ -242,6 +236,7 @@ def build_data_path(coeffs, times, interpolation_method):
         cdeint_options = dict(grid_points=X.grid_points, eps=1e-5)
 
     return X, cdeint_options
+
 
 def plot_interpolation_path(coefficients, dataset, times, interpolation_method, n=None):
     print('Plotting interpolation of a sample for sanity check...')
@@ -279,6 +274,7 @@ def plot_interpolation_path(coefficients, dataset, times, interpolation_method, 
     #plt.show()
     return fig
 
+
 # Classes for creating the Neural CDE system
 class CDEFunc(torch.nn.Module):
     def __init__(self, input_channels, hidden_channels, hidden_hidden_channels, num_hidden_layers, activation_func='relu', layer_norm=False):
@@ -288,23 +284,24 @@ class CDEFunc(torch.nn.Module):
         self.nfe = 0 # number of function evaluations
         self.input_channels = input_channels
         self.hidden_channels = hidden_channels
-        self.linear_in = torch.nn.Linear(hidden_channels, hidden_hidden_channels)
-        self.linears = torch.nn.ModuleList(torch.nn.Linear(hidden_hidden_channels, hidden_hidden_channels)
-                                           for _ in range(num_hidden_layers - 1))
-        self.linear_out = torch.nn.Linear(hidden_hidden_channels, input_channels * hidden_channels)
         self.layer_norm = layer_norm
+        if activation_func == 'celu': 
+            self.activation = torch.nn.CELU()
+        else:
+            self.activation = torch.nn.ReLU()
+        
+        self.linear_in = torch.nn.Linear(hidden_channels, hidden_hidden_channels)
+        self.linear_out = torch.nn.Linear(hidden_hidden_channels, input_channels * hidden_channels)
+        layers = []
+        for _ in range(num_hidden_layers - 1):
+            layers.append(torch.nn.Linear(hidden_hidden_channels, hidden_hidden_channels))
+            if self.layer_norm:
+                layers.append(torch.nn.LayerNorm(hidden_hidden_channels))
+            layers.append(self.activation)
+        self.sequential = torch.nn.Sequential(*layers)
         if self.layer_norm:
             self.ln_in = torch.nn.LayerNorm(hidden_hidden_channels) 
             self.ln_out = torch.nn.LayerNorm(input_channels * hidden_channels)
-        # consider to do activation in-place if memory usage is too intensive
-        if activation_func == 'leaky': 
-            self.activation = torch.nn.LeakyReLU()
-        elif activation_func == 'elu':
-            self.activation = torch.nn.ELU()
-        elif activation_func == 'tanh':
-            self.activation = torch.nn.Tanh()
-        else:
-            self.activation = torch.nn.ReLU()
 
     def forward(self, t, z):
         self.nfe += 1
@@ -312,11 +309,7 @@ class CDEFunc(torch.nn.Module):
         if self.layer_norm:
             z = self.ln_in(z)
         z = self.activation(z)
-        for linear in self.linears:
-            z = linear(z)
-            if self.layer_norm:
-                z = self.ln_in(z)
-            z = self.activation(z)
+        z = self.sequential(z)
         z = self.linear_out(z)
         if self.layer_norm:
             z = self.ln_out(z)
@@ -325,7 +318,8 @@ class CDEFunc(torch.nn.Module):
         return z
 
     def reset_nfe(self):
-        self.nfe = 0
+        self.nfe = 0       
+
 
 class NeuralCDE(torch.nn.Module):
     def __init__(self, vector_field, input_channels, hidden_channels, output_channels, interpolation_method, rtol=1e-4, atol=1e-6, layer_norm=False, seminorm=False):
@@ -371,6 +365,7 @@ class NeuralCDE(torch.nn.Module):
         pred_y = torch.nn.functional.softmax(pred_y, dim=-1) # New. Added a soft-max to get soft assignments that work with the multi-class cross entropy loss function
         return pred_y
 
+
 class RNN(torch.nn.Module): # Thank you Python Engineer! https://www.youtube.com/watch?v=0_PgWWmauHk
     def __init__(self, input_channels, hidden_channels, num_layers, output_channels):
         super(RNN, self).__init__()
@@ -393,6 +388,7 @@ class RNN(torch.nn.Module): # Thank you Python Engineer! https://www.youtube.com
         out = torch.nn.functional.softmax(out, dim=-1) # Last layer same as ncde
         return out
 
+
 class GRU(torch.nn.Module): # Thank you Python Engineer! https://www.youtube.com/watch?v=0_PgWWmauHk
     def __init__(self, input_channels, hidden_channels, num_layers, output_channels):
         super(GRU, self).__init__()
@@ -414,6 +410,7 @@ class GRU(torch.nn.Module): # Thank you Python Engineer! https://www.youtube.com
         out = self.linear(out)
         out = torch.nn.functional.softmax(out, dim=-1) # Last layer same as ncde
         return out
+
 
 class LSTM(torch.nn.Module): # Thank you Python Engineer! https://www.youtube.com/watch?v=0_PgWWmauHk
     def __init__(self, input_channels, hidden_channels, num_layers, output_channels):
@@ -438,6 +435,7 @@ class LSTM(torch.nn.Module): # Thank you Python Engineer! https://www.youtube.co
         out = torch.nn.functional.softmax(out, dim=-1) # Last layer same as ncde
         return out
 
+
 class ODERNNFunc(torch.nn.Module): # From Kidger 2020
     def __init__(self, hidden_channels, hidden_hidden_channels, num_hidden_layers):
         super(ODERNNFunc, self).__init__()
@@ -456,6 +454,7 @@ class ODERNNFunc(torch.nn.Module): # From Kidger 2020
     
     def reset_nfe(self):
         self.nfe = 0
+
 
 class ODERNN(torch.nn.Module): # From Kidger 2020
     def __init__(self, input_channels, hidden_channels, hidden_hidden_channels, num_hidden_layers, output_channels, rtol=1e-4, atol=1e-5):
@@ -510,6 +509,7 @@ class ODERNN(torch.nn.Module): # From Kidger 2020
         out = torch.nn.functional.softmax(out, dim=-1) # Last layer same as ncde
         return out
 
+
 class CustomDataset(torch.utils.data.Dataset): # TODO: hdf5 dataset if this is what makes the FasterDataLoader faster
     def __init__(self, coeffs, labels):
         assert isinstance(coeffs, torch.Tensor)
@@ -520,6 +520,7 @@ class CustomDataset(torch.utils.data.Dataset): # TODO: hdf5 dataset if this is w
     def __getitem__(self, idx):
         pass
     
+
 class FastTensorDataLoader: # Edited from from Nando's class
     """
     A DataLoader-like object for a set of tensors that can be much faster than
@@ -576,6 +577,7 @@ class FastTensorDataLoader: # Edited from from Nando's class
     def __len__(self):
         return self.n_batches
 
+
 class _TensorEncoder(json.JSONEncoder): # From Patrick Kigger, to serialize also tensors and ndarrays when saving experiment output in a json file.
     def default(self, o):
         if isinstance(o, (torch.Tensor, np.ndarray)):
@@ -583,8 +585,10 @@ class _TensorEncoder(json.JSONEncoder): # From Patrick Kigger, to serialize also
         else:
             super(_TensorEncoder, self).default(o)
 
+
 def rms_norm(tensor):
     return tensor.pow(2).mean().sqrt()
+
 
 def make_norm(state): # From https://github.com/JoaquinGajardo/FasterNeuralDiffEq/blob/master/models/common.py
     state_size = state.numel()
@@ -594,15 +598,18 @@ def make_norm(state): # From https://github.com/JoaquinGajardo/FasterNeuralDiffE
         return max(rms_norm(y), rms_norm(adj_y))
     return norm
 
+
 def init_network_weights(net, std = 0.1): # From Nando. Not used, Pytorch default initialization of layers seems alright.
     for m in net.modules():
         if isinstance(m, torch.nn.Linear):
             torch.nn.init.normal_(m.weight, mean=0, std=std)
             torch.nn.init.constant_(m.bias, val=0)
 
+
 def count_parameters(model):
     """Counts the number of parameters in a model."""
     return sum(param.numel() for param in model.parameters() if param.requires_grad_)
+
 
 def add_weight_regularisation(loss_fn, model, scaling=0.005):
     """ Adds L2-regularisation to the loss function """
@@ -614,10 +621,12 @@ def add_weight_regularisation(loss_fn, model, scaling=0.005):
         return total_loss
     return new_loss_fn
 
+
 def compute_multiclass_cross_entropy(y_true, y_pred): # From Nando
     eps = 1e-10
     ce_loss = -(y_true * torch.log(y_pred + eps)).sum(dim=1).mean()  # because torch.nn.functional.cross_entropy -> multi-target not supported
     return ce_loss
+
 
 def compute_total_matches(y_true, y_pred):
     thresholded_pred = torch.argmax(y_pred, dim=1)
@@ -625,17 +634,20 @@ def compute_total_matches(y_true, y_pred):
     prediction_matches = (thresholded_pred == labels_max_indices).to(y_pred.dtype).sum()
     return prediction_matches
 
+
 def compute_f1_score(y_true, y_pred):
     thresholded_pred = torch.argmax(y_pred, dim=1).detach().cpu()
     labels_max_indices = torch.argmax(y_true, dim=1).detach().cpu()
     f1_score = sklearn.metrics.f1_score(labels_max_indices, thresholded_pred, average=None) # returns per-class F1 scores, taking the mean of this is eq. to average='macro'
     return f1_score
 
+
 def compute_confusion_matrix(y_true, y_pred, class_names=None):
     thresholded_pred = torch.argmax(y_pred, dim=1).detach().cpu()
     labels_max_indices = torch.argmax(y_true, dim=1).detach().cpu()
     confusion = sklearn.metrics.confusion_matrix(labels_max_indices, thresholded_pred, labels=class_names, normalize='true')
     return confusion
+
 
 def plot_confusion_matrix(confusion, labels, expID):
     df_cm = pd.DataFrame(confusion, index = [i for i in labels], columns = [i for i in labels])
@@ -648,8 +660,10 @@ def plot_confusion_matrix(confusion, labels, expID):
     cm_path = os.path.join(here, 'figures/confusion')
     if not os.path.exists(cm_path):
         os.makedirs(cm_path, exist_ok=True)
+    print(f'Saving confusion matrix in: {cm_path}')
     plt.savefig(f'{cm_path}/cm_exp{expID}.png', bbox_inches='tight')
     #plt.show()
+
 
 def evaluate_metrics(dataloader, model, times, device, loss_fn=compute_multiclass_cross_entropy, labels=None):
     with torch.no_grad():
@@ -687,12 +701,13 @@ def evaluate_metrics(dataloader, model, times, device, loss_fn=compute_multiclas
         metrics = dict(dataset_size=total_dataset_size, loss=round(total_loss.item(), 5), accuracy=round(total_accuracy.item(), 5), f1_score=round(total_f1_score.mean().item(), 5), perclass_f1= total_f1_score.round(5), confusion=confusion.round(2))
         return metrics
 
+
 def grid_search_runs(args, repeats=1):
     ''' Makes a grid with every combination of the arguments that are passed as a list
         and one run for each combination.'''
     def combinations(*args):
         combinations_list = []
-        for combination in product(*args):
+        for combination in itertools.product(*args):
             combinations_list.append(combination)
         return combinations_list  
     grid = []
@@ -725,11 +740,13 @@ def grid_search_runs(args, repeats=1):
             print('Combination run time:', round(time.time() - combination_start_time, 2), 'seconds')
         print(f'Total grid search run (n of combinations={len(combinations_list)}) time: {round(time.time() - start_time, 2)} seconds')
       
+
 def parse_args():
     parser = argparse.ArgumentParser()	
     parser.add_argument("--data_root", type=str, default="C:\\Users\\jukin\\Desktop\\Ms_Thesis\\Data\\Crops\\processed", help='[default=%(default)s].')
     parser.add_argument("--noskip", default=False, action="store_true", help='Activate for using even cloudy observations [default=%(default)s].')
     parser.add_argument("--reduced", default=False, action="store_true", help='Use only a fraction of the dataset features (for Crops dataset) [default=%(default)s].')
+    parser.add_argument("--intensity", default=False, action="store_true", help='Äctivate for using appending observational mask for every channel as extra features [default=%(default)s].')
     parser.add_argument("--time_default", default=True, action="store_true", help='To not pass the original dataset timestamps to the interpolation and model and use the default equally spaced time array of torchde interpolation methods [default=%(default)s].')
     parser.add_argument("--interpol_method", type=str, default='linear', choices=['cubic', 'linear', 'rectilinear'], help='Interpolation method to use for creating continous data path X [default=%(default)s].')
     parser.add_argument("--ntrain", type=int, default=None, help='Number of train samples [default=%(default)s].')
@@ -741,7 +758,7 @@ def parse_args():
     parser.add_argument("--HC", type=int, default=64, nargs='*', help='Hidden channels. Size of the hidden state in NCDE or RNN models [default=%(default)s].')
     parser.add_argument("--HL", type=int, default=1, nargs='*', help='Number of hidden layers in the vector field or of RNN layers if an RNN model is selected [default=%(default)s].')
     parser.add_argument("--HU", type=int, default=128, nargs='*', help='Number of hidden units in the vector field [default=%(default)s].')
-    parser.add_argument("--activation", type=str, default='relu', choices=['relu', 'leaky', 'elu', 'tanh'],  help='Intermediate activation function in vector field of NCDE (final one is always tanh) [default=%(default)s].')
+    parser.add_argument("--activation", type=str, default='relu', choices=['relu', 'celu'],  help='Intermediate activation function in vector field of NCDE (final one is always tanh) [default=%(default)s].')
     parser.add_argument("--layer_norm", default=False, action="store_true", help='Apply layer norm to before every activation function [default=%(default)s].')
     parser.add_argument("--ES_patience", type=int, default=5, help='Early stopping number of epochs to wait before stopping [default=%(default)s].')
     parser.add_argument("--lr_decay", default=True, action="store_true", help='Add learning rate decay if when no improvement of training accuracy [default=%(default)s].')
@@ -761,6 +778,7 @@ def parse_args():
     args = parser.parse_args()
     return args
 
+
 # Main code
 def main(args):
     # Grid search over arguments that are a list
@@ -775,6 +793,7 @@ def main(args):
     absolute_data_directory_path = args_dict['data_root']
     noskip= args_dict['noskip']
     reduced =  args_dict['reduced']
+    intensity =  args_dict['intensity']
     time_default = args_dict['time_default']
     interpolation_method = args_dict['interpol_method']
     ntrain_samples = args_dict['ntrain']
@@ -816,7 +835,7 @@ def main(args):
     print(f'Arguments: \n {args_dict}')
 
     # Get data and labels
-    data = get_data(absolute_data_directory_path=absolute_data_directory_path, use_noskip=noskip, reduced=reduced, ntrain=ntrain_samples, nval=nval_samples, use_model=use_model)
+    data = get_data(absolute_data_directory_path=absolute_data_directory_path, use_noskip=noskip, reduced=reduced, ntrain=ntrain_samples, nval=nval_samples, use_model=use_model, intensity=intensity)
     times = None if time_default and use_model == 'ncde' else data['times']
     coeffs_directory = os.path.join(absolute_data_directory_path, 'interpolation_coefficients')
     if use_model == 'ncde':
@@ -1012,7 +1031,7 @@ def main(args):
     best_epoch = best_val_f1_epoch
     test_acc = test_metrics_best_model["accuracy"] 
     test_f1 = test_metrics_best_model["f1_score"]
-    print(f'Best epoch: {best_epoch} | Best val accuracy: {best_val_acc}, Best val f1: {best_val_f1} Test accuracy best model: {test_acc}, Test f1 score best model: {test_f1}')
+    print(f'Best epoch: {best_epoch} | best val accuracy: {best_val_acc}, best val f1: {best_val_f1}, test accuracy best model: {test_acc}, test f1 score best model: {test_f1}')
 
     # Log test metrics
     if logwandb:
@@ -1044,6 +1063,7 @@ def main(args):
         n += 1
     with open(os.path.join(results_path, f'results{n}_{expID}_{batch_size}BS_{learning_rate}lr_{lr_decay_factor}lrdecay_{hidden_channels}HC_{num_hidden_layers}HL_{hidden_hidden_channels}HU_{interpolation_method}_{timing}{noskip}{red}.json'), 'w') as f:
         json.dump(output, f, cls=_TensorEncoder)
+
 
 if __name__ == '__main__':
     start_time = time.time()
