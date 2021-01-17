@@ -837,7 +837,8 @@ def main(args):
     # Get data and labels
     data = get_data(absolute_data_directory_path=absolute_data_directory_path, use_noskip=noskip, reduced=reduced, ntrain=ntrain_samples, nval=nval_samples, use_model=use_model, intensity=intensity)
     times = None if time_default and use_model == 'ncde' else data['times']
-    coeffs_directory = os.path.join(absolute_data_directory_path, 'interpolation_coefficients')
+    intensity_str = '_intensity' if intensity else ''
+    coeffs_directory = os.path.join(absolute_data_directory_path, f'interpolation_coefficients{intensity_str}')
     if use_model == 'ncde':
         coefficients = get_interpolation_coeffs(coeffs_directory, data, times, interpolation_method=interpolation_method, use_noskip=noskip, reduced=reduced)
         fig = plot_interpolation_path(coefficients, 'train', times, interpolation_method)
