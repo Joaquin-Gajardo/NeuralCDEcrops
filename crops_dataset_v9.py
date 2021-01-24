@@ -11,8 +11,8 @@ v5: 23.11.2020. Added histogram for gradients in wandb.
 v6: 07.12.2020. -Added experiment ID and save and load checkpoints. Using noskip datasets and return mask too in get_data function. Log gradients
                 -Modified data preprocessing considerably and interpolation, added option for reduced dataset, times to use, interpolation method and save coeffs as dataset. Plot sample function, build interpolation path function.
 v7: 09.12.2020. Added batch norm and root data path argument. Added tqdm progress bar for measuring epochs speed. Added faster dataloader option.
-v8: 14.12.2020. Added gradient clipping and replaced batch norm by layer norm options. 15.12.2020. Added RNN baseline models and semilog speed up option. 23.12. Added odernn baseline, atol/rtol options and nfes + time logging. 24.12. Changed results save name and argument. 29.12. Added activation functions, minor changes to defaults for lr decay and grid search option. 05.01. Change in test metrics best model and to regularization argument.
-v9: 05.01.2021. Change in test metrics best model and to regularization argument. 11.01. Added confusion matrix and per class F1 scores in evaluate metrics function. Changes at test time. 13.01. Output as dictionary and save to json file. 15.01. Changes in data preprocessing, added observational mask as option (intensity argument). Added only CELU as option for activation functions, fixed layer norm in CDEFunc, some pep8 conformity.
+v8: 14.12.2020. Added gradient clipping and replaced batch norm by layer norm options. 15.12.2020. Added RNN baseline models and semilog speed up option. 23.12. Added odernn baseline, atol/rtol options and nfes + time logging. 24.12. Changed results save name and argument. 29.12. Added activation functions, minor changes to defaults for lr decay and grid search option.
+v9: 05.01.2021. Change in test metrics best model and to regularization argument. 11.01. Added confusion matrix and per class F1 scores in evaluate metrics function. Changes at test time. 13.01. Output as dictionary and save to json file. 15.01. Changes in data preprocessing, added observational mask as option (intensity argument). Added only CELU as option for activation functions, fixed layer norm in CDEFunc, some pep8 conformity. 21.01. Log batch training loss and batch iteration counter. 24.01. Changes in data preprocessing (one-channel obs mask, normalize new channels)
 """
 
 ###  Import libraries
@@ -119,33 +119,77 @@ def get_data(absolute_data_directory_path, use_noskip=False, reduced=False, ntra
         data['val_mask'] = data['val_mask'][:, :, 4:-1:9]
         data['test_mask'] = data['test_mask'][:, :, 4:-1:9]
 
-    # Impute NaNs where mask is 0 (non-observed pixel due to bad weather)	
-    if use_model == 'ncde': # TODO: just remove this if-else clause if later I decide to do "same imputation method for all models" (interpolation and padding last and first observed value which is donde by torchcde)
+    # Processing
+    if use_model == 'ncde': # TODO: just remove this if-else clause if later I decide to do "same imputation method for all models" (interpolation by torchcde)
+        
         train_mask = data['train_mask'].to(bool)
         val_mask = data['val_mask'].to(bool)
         test_mask = data['test_mask'].to(bool)
         
-        # Impute NaNs in non-observed pixels (0=False=unobserved)
+        # Impute NaNs in non-observed pixels (0=False=unobserved due to bad weather)
         data['train_data'][train_mask == False] = float('nan')
         data['val_data'][val_mask == False] = float('nan')
         data['test_data'][test_mask == False] = float('nan')
 
-        # Concatenate observational mask of features as extra features
-        if intensity:
-            for i in ['train_data', 'val_data', 'test_data']:
-                obs_mask = (~torch.isnan(data[i])).cumsum(dim=-2) # cumsum in time dimension (cumulative mask, when doing dX/dt just the observational mask will be recovered)
-                data[i] = torch.cat([data[i], obs_mask], dim=-1) # concatenate in features dimension
-    else: # baselines
-        if intensity: # TODO: let's try first as before, with other models having 0s when missing values (otherwise just fill missing values with interpolation for other models, like Kidger. In that case erase this else block and remove the if statement above)
-            for i in ['train_data', 'val_data', 'test_data']:
-                obs_mask = (data[i] != 0.0) # a simple observational mask of 0s and 1s
-                data[i] = torch.cat([data[i], obs_mask], dim=-1) # concatenate in features dimension
-
-    # Concatenate time as the first feature
-    if time_as_channel:
         for i in ['train_data', 'val_data', 'test_data']:
-            t = data['times'].unsqueeze(0).repeat(data[i].size(0), 1).unsqueeze(-1)
-            data[i] = torch.cat([t, data[i]], dim=-1)
+            # Concatenate observational mask of features as extra features
+            if intensity: 
+                # Check that observational mask has all channels identical 
+                obs_mask = (~torch.isnan(data[i])).cumsum(dim=-2) # cumsum in time dimension (cumulative mask, when doing dX/dt just the simple observational mask will be recovered)
+                assert ((~torch.isnan(data[i])).sum(dim=2) > 0).sum() == ((~torch.isnan(data[i])).sum(dim=2) == 54).sum() # 1st test: if true they are all the same. Read like: "if one channel is missing at any timestep in any sample, all the channels are missing"
+                assert torch.equal(obs_mask, obs_mask[:, :, 0].unsqueeze(-1).repeat(1, 1, obs_mask.size(-1))) # 2nd (simpler) test: if true then all channels in obs_mask are the same
+                obs_mask = obs_mask[:, :, 0].unsqueeze(-1).to(float) # pick any channel they are all the same
+
+                # Normalize obs_mask and append as a channel
+                obs_mask = (obs_mask - obs_mask.mean()) / (obs_mask.std() + 1e-6)
+                data[i] = torch.cat([data[i], obs_mask], dim=-1) # concatenate in features dimension
+    
+            # Concatenate time as the first feature
+            if time_as_channel:
+                t = data['times'].unsqueeze(0).repeat(data[i].size(0), 1).unsqueeze(-1)
+                t = (t - t.mean()) / (t.std() + 1e-6) # better if it's 0-centered and scaled by its std like the rest of the data
+                data[i] = torch.cat([t, data[i]], dim=-1)
+
+                if intensity:
+                    non_intensity_channels = data[i].size(-1) - 1 # obs_mask is just one channel
+                else:
+                    non_intensity_channels = data[i].size(-1)
+                    
+                # Impute NaN in time channel if timestep is invalid
+                idx = torch.isnan(data[i][..., :non_intensity_channels]).sum(dim=-1) > 0 # if there is at least one NaN we already know the timestep is missing entirely
+                data[i][:, :, 0][idx] = float('nan')
+
+    else: # baselines
+
+        for i in ['train_data', 'val_data', 'test_data']:
+
+            # Concatenate observational mask of features as extra features
+            if intensity:
+                # Check that observational mask has all channels identical 
+                obs_mask = (data[i] != 0.0)
+                assert ((data[i] != 0.0).sum(dim=2) > 0).sum() == ((data[i] != 0.0).sum(dim=2) == 54).sum() # 1st test: if true they are all the same. Read like: "if one channel is missing at any timestep in any sample, all the channels are missing"
+                assert torch.equal(obs_mask, obs_mask[:, :, 0].unsqueeze(-1).repeat(1, 1, obs_mask.size(-1))) # 2nd (simpler) test: if true then all channels in obs_mask are the same
+                obs_mask = obs_mask[:, :, 0].unsqueeze(-1).to(float) # pick any channel they are all the same
+
+                # Normalize obs_mask and append as a channel
+                obs_mask = (obs_mask - obs_mask.mean()) / (obs_mask.std() + 1e-6)
+                data[i] = torch.cat([data[i], obs_mask], dim=-1) # concatenate in features dimension
+            
+            # Concatenate time as the first feature
+            if time_as_channel:
+                # TODO: see if I have to use time differences for RNN models.
+                t = data['times'].unsqueeze(0).repeat(data[i].size(0), 1).unsqueeze(-1)
+                t = (t - t.mean()) / (t.std() + 1e-6) # better if it's 0-centered and scaled by its std like the rest of the data
+                data[i] = torch.cat([t, data[i]], dim=-1)
+
+                if intensity:
+                    non_intensity_channels = data[i].size(-1) - 1 # obs_mask is just one channel
+                else:
+                    non_intensity_channels = data[i].size(-1)
+                    
+                # Impute NaN in time channel if timestep is invalid
+                idx = (data[i][..., :non_intensity_channels] == 0.0).sum(dim=-1) > 0 # if there is at least one missing value (0.0) we already know the timestep is missing entirely
+                data[i][:, :, 0][idx] = 0.0
 
     # Print missing values rate
     train_missing_rate = get_missing_values_rate(data['train_data'])
@@ -943,6 +987,7 @@ def main(args):
     if not time_default: times = times.to(device) # Shouldn't give problems because times is None otherwise.
     start = time.time()
     pbar = tqdm.tqdm(range(1, num_epochs + 1))
+    n = 0 # num of batch iterations counter
     for epoch in pbar:
         start_epoch = time.time()
         epoch_nfes = 0 # number of fuction evaluations for ncde and odernn on forward pass
@@ -977,7 +1022,11 @@ def main(args):
             # Log gradients for inspection
             for name, parameter in model.named_parameters():
                 if logwandb:
-                    wandb.log({f'gradient/{name}': wandb.Histogram(parameter.grad.detach().cpu().numpy())}) 
+                    wandb.log({f'gradient/{name}': wandb.Histogram(parameter.grad.detach().cpu().numpy()), 'iteration': n}) 
+            
+            if logwandb:
+                wandb.log({'batch training loss': loss, 'iteration': n})
+            n += 1
 
         # Compute traininig and validation metrics for the epoch
         model.eval()
