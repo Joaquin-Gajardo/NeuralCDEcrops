@@ -2,4 +2,6 @@
 
 To run change the data_root flag: 
 
-''' python crop_dataset_v9.py --data_root "YOUR/DATA/PATH" '''
+'''
+python crop_dataset_v9.py --data_root "YOUR/DATA/PATH"
+'''
