@@ -138,8 +138,6 @@ def get_data(absolute_data_directory_path, use_noskip=False, reduced=False, ntra
             if intensity: 
                 # Check that observational mask has all channels identical 
                 obs_mask = (~torch.isnan(data[i])).cumsum(dim=-2) # cumsum in time dimension (cumulative mask, when doing dX/dt just the simple observational mask will be recovered)
-                assert ((~torch.isnan(data[i])).sum(dim=2) > 0).sum() == ((~torch.isnan(data[i])).sum(dim=2) == 54).sum() # 1st test: if true they are all the same. Read like: "if one channel is missing at any timestep in any sample, all the channels are missing"
-                assert torch.equal(obs_mask, obs_mask[:, :, 0].unsqueeze(-1).repeat(1, 1, obs_mask.size(-1))) # 2nd (simpler) test: if true then all channels in obs_mask are the same
                 obs_mask = obs_mask[:, :, 0].unsqueeze(-1).to(float) # pick any channel they are all the same
 
                 # Normalize obs_mask and append as a channel
@@ -169,8 +167,6 @@ def get_data(absolute_data_directory_path, use_noskip=False, reduced=False, ntra
             if intensity:
                 # Check that observational mask has all channels identical 
                 obs_mask = (data[i] != 0.0)
-                assert ((data[i] != 0.0).sum(dim=2) > 0).sum() == ((data[i] != 0.0).sum(dim=2) == 54).sum() # 1st test: if true they are all the same. Read like: "if one channel is missing at any timestep in any sample, all the channels are missing"
-                assert torch.equal(obs_mask, obs_mask[:, :, 0].unsqueeze(-1).repeat(1, 1, obs_mask.size(-1))) # 2nd (simpler) test: if true then all channels in obs_mask are the same
                 obs_mask = obs_mask[:, :, 0].unsqueeze(-1).to(float) # pick any channel they are all the same
 
                 # Normalize obs_mask and append as a channel
