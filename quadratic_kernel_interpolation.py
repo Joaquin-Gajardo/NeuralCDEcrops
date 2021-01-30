@@ -21,7 +21,7 @@ l_kernel = 0.05 # this is the width of the kernel and decides how much the funct
 sigma_noise = 0.05 # this sets the noise std for the valid measurements, the smaller this value, the closer the curve will be to the "control points"
 
 
-def quadratic_kernel_interpolation_coeffs(x, t, sigma_kernel=0.25, l_kernel=0.05, sigma_noise=0.05):
+def quadratic_kernel_interpolation_coeffs(x, t):
     """ creates kernel matrix for gaussian process-like interpolation using an exponential quadratic kernel
 
     Arguments:

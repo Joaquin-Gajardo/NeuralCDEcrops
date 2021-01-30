@@ -12,7 +12,8 @@ v6: 06.12.2020. Modified data preprocessing and interpolation, added option for 
 v7: 09.12.2020. Added batch norm and root data path argument. Added tqdm progress bar for measuring epochs speed. Added faster dataloader option.
 v8: 14.12.2020. Added gradient clipping and replaced batch norm by layer norm options. 15.12.2020. Added RNN baseline models and semilog speed up option. 23.12. Added odernn baseline, atol/rtol options and nfes + time logging. 24.12. Changed results save name and argument. 29.12. Added activation functions, minor changes to defaults for lr decay and grid search option. 
 v9: 05.01.2021. Change in test metrics best model and to regularization argument. 11.01. Added confusion matrix and per class F1 scores in evaluate metrics function. Changes at test time. 13.01. Output as dictionary and save to json file. 15.01. Changes in data preprocessing, added observational mask as option (intensity argument). Added only CELU as option for activation functions, fixed layer norm in CDEFunc, some pep8 conformity. 21.01. Log batch training loss and batch iteration counter. 24.01. Changes in data preprocessing (one-channel obs mask, normalize new channels).
-v10: 27.01.2021. Included option for squared exponential kernel intepolation.
+v10: 27.01.2021. Included option for squared exponential kernel intepolation. 30.01. Modified data preprocessing: added padding the data for ncde model and drop last timestep.
+
 """
 
 ###  Import libraries
@@ -75,7 +76,7 @@ reverse_TUM_labels_dict = {v: k for k, v in TUM_labels_dict.items()}
 
 
 # Get processed data from TUM dataset (TODO add script with Nando's code of data processing!)
-def get_data(absolute_data_directory_path, use_noskip=False, reduced=False, ntrain=None, nval=None, use_model='ncde', time_as_channel=True, intensity=False):
+def get_data(absolute_data_directory_path, use_noskip=False, reduced=False, ntrain=None, nval=None, use_model='ncde', intensity=False):
     # Read dataset
     noskip = 'noskip' if use_noskip else ''
     
@@ -138,26 +139,25 @@ def get_data(absolute_data_directory_path, use_noskip=False, reduced=False, ntra
             if intensity: 
                 # Check that observational mask has all channels identical 
                 obs_mask = (~torch.isnan(data[i])).cumsum(dim=-2) # cumsum in time dimension (cumulative mask, when doing dX/dt just the simple observational mask will be recovered)
-                obs_mask = obs_mask[:, :, 0].unsqueeze(-1).to(float) # pick any channel they are all the same
-
+                obs_mask = obs_mask[:, :, 0].unsqueeze(-1).to(dtype=torch.float32) # pick any channel they are all the same
+                
                 # Normalize obs_mask and append as a channel
                 obs_mask = (obs_mask - obs_mask.mean()) / (obs_mask.std() + 1e-6)
                 data[i] = torch.cat([data[i], obs_mask], dim=-1) # concatenate in features dimension
     
             # Concatenate time as the first feature
-            if time_as_channel:
-                t = data['times'].unsqueeze(0).repeat(data[i].size(0), 1).unsqueeze(-1)
-                t = (t - t.mean()) / (t.std() + 1e-6) # better if it's 0-centered and scaled by its std like the rest of the data
-                data[i] = torch.cat([t, data[i]], dim=-1)
+            t = data['times'].unsqueeze(0).repeat(data[i].size(0), 1).unsqueeze(-1)
+            t = (t - t.mean()) / (t.std() + 1e-6) # better if it's 0-centered and scaled by its std like the rest of the data
+            data[i] = torch.cat([t, data[i]], dim=-1)
 
-                if intensity:
-                    non_intensity_channels = data[i].size(-1) - 1 # obs_mask is just one channel
-                else:
-                    non_intensity_channels = data[i].size(-1)
-                    
-                # Impute NaN in time channel if timestep is invalid
-                idx = torch.isnan(data[i][..., :non_intensity_channels]).sum(dim=-1) > 0 # if there is at least one NaN we already know the timestep is missing entirely
-                data[i][:, :, 0][idx] = float('nan')
+            # Pad backwards and forward first and last valid timesteps
+            if intensity:
+                num_non_intensity_channels = data[i].size(-1) - 1 # obs_mask is just one channel
+            else:
+                num_non_intensity_channels = data[i].size(-1)
+            
+            data[i] = fill_first_nonnan_backward(data[i], num_non_intensity_channels)
+            data[i] = fill_last_nonnan_forward(data[i], num_non_intensity_channels)
 
     else: # baselines
 
@@ -167,27 +167,23 @@ def get_data(absolute_data_directory_path, use_noskip=False, reduced=False, ntra
             if intensity:
                 # Check that observational mask has all channels identical 
                 obs_mask = (data[i] != 0.0)
-                obs_mask = obs_mask[:, :, 0].unsqueeze(-1).to(float) # pick any channel they are all the same
+                obs_mask = obs_mask[:, :, 0].unsqueeze(-1).to(dtype=torch.float32) # pick any channel they are all the same
 
                 # Normalize obs_mask and append as a channel
                 obs_mask = (obs_mask - obs_mask.mean()) / (obs_mask.std() + 1e-6)
                 data[i] = torch.cat([data[i], obs_mask], dim=-1) # concatenate in features dimension
             
             # Concatenate time as the first feature
-            if time_as_channel:
-                # TODO: see if I have to use time differences for RNN models.
-                t = data['times'].unsqueeze(0).repeat(data[i].size(0), 1).unsqueeze(-1)
-                t = (t - t.mean()) / (t.std() + 1e-6) # better if it's 0-centered and scaled by its std like the rest of the data
-                data[i] = torch.cat([t, data[i]], dim=-1)
+            t = data['times'].unsqueeze(0).repeat(data[i].size(0), 1).unsqueeze(-1)
+            t = (t - t.mean()) / (t.std() + 1e-6) # better if it's 0-centered and scaled by its std like the rest of the data
+            data[i] = torch.cat([t, data[i]], dim=-1)
+    
+    # Drop last and first 4 timesteps because the only have invalid observations
+    data['train_data'] = data['train_data'][:, :-1, :]
+    data['val_data'] = data['val_data'][:, :-1, :]
+    data['test_data'] = data['test_data'][:, :-1, :]
+    data['times'] = data['times'][:-1]       
 
-                if intensity:
-                    non_intensity_channels = data[i].size(-1) - 1 # obs_mask is just one channel
-                else:
-                    non_intensity_channels = data[i].size(-1)
-                    
-                # Impute NaN in time channel if timestep is invalid
-                idx = (data[i][..., :non_intensity_channels] == 0.0).sum(dim=-1) > 0 # if there is at least one missing value (0.0) we already know the timestep is missing entirely
-                data[i][:, :, 0][idx] = 0.0
 
     # Print missing values rate
     train_missing_rate = get_missing_values_rate(data['train_data'])
@@ -198,6 +194,32 @@ def get_data(absolute_data_directory_path, use_noskip=False, reduced=False, ntra
     print(f'Test data has {test_missing_rate * 100 :0.3f}% of missing values.')
 
     return data
+
+
+def fill_last_nonnan_forward(x, num_non_intensity_channels): # warning: it only works for tensors of ndim=3 and to fill in the dim=1.
+    if isinstance(x, torch.Tensor):
+        x = x.numpy()
+    tmp = np.flip(x, axis=1)
+    idxs = np.argmax(~np.isnan(tmp[..., :num_non_intensity_channels]), axis=1)
+    idx = np.min(idxs[:, 1:], axis=1)
+    for i, sample in enumerate(tmp):
+        tmp[i, :idx[i], :num_non_intensity_channels] = np.tile(sample[idx[i], :num_non_intensity_channels], (idx[i], 1))
+    x_mod = np.flip(tmp, axis=1)
+    x_mod = torch.from_numpy(x)
+    assert isinstance(x_mod, torch.Tensor)
+    return x_mod
+
+
+def fill_first_nonnan_backward(x, num_non_intensity_channels): # warning: it only works for tensors of ndim=3 and to fill in the dim=1. Also inefficient because of for loop.
+    if isinstance(x, torch.Tensor):
+        x = x.numpy()
+    idxs = np.argmax(~np.isnan(x[..., :num_non_intensity_channels]), axis=1)
+    idx = np.min(idxs[:, 1:], axis=1)
+    for i, sample in enumerate(x):
+        x[i, :idx[i], :num_non_intensity_channels] = np.tile(sample[idx[i], :num_non_intensity_channels], (idx[i], 1))
+    x_mod = torch.from_numpy(x)
+    assert isinstance(x_mod, torch.Tensor)
+    return x_mod
 
 
 def get_missing_values_rate(data_tensor):
@@ -244,7 +266,7 @@ def get_interpolation_coeffs(directory, data, times, use_noskip, reduced, interp
                 coefficients['val_coeffs'] = quadratic_kernel_interpolation.quadratic_kernel_interpolation_coeffs(x=data['val_data'], t=times)
                 coefficients['test_coeffs'] = quadratic_kernel_interpolation.quadratic_kernel_interpolation_coeffs(x=data['test_data'], t=times)
             else:
-                raise NotImplementedError('Original timestamps must be used with this interpolation method, please adjust time_default command line argument accordingly.')
+                raise NotImplementedError('Original timestamps must be used with this interpolation method, please make sure that the time_default command line argument is set to False.')
     
         # Save coefficients in the new directory
         print('Saving interpolation coefficients ...')
@@ -299,14 +321,9 @@ def plot_interpolation_path(coefficients, dataset, times, interpolation_method, 
     if n is None or n > coeffs.size(0):
         n = np.random.randint(0, coeffs.size(0))
     coeffs = coeffs[n].unsqueeze(0)
-    print(coeffs.shape)
 
     X = build_data_path(coeffs, times, interpolation_method)[0]
-    if interpolation_method == 'rectilinear':        
-        t = X.grid_points # if it's rectifilear (or linear) the ode solver will evaluate at gridpoints anyway.
-        print('t knots:', t, t.shape)
-    else: # plot more points to see the true shape of them (discontinuities in dX for linear and the smoothness of cubic) 
-        t = torch.linspace(0., X.interval[-1], 1001)
+    t = torch.linspace(0., X.interval[-1], 1001) # plot a lot of points to see the true shape of interpolation (discontinuities in dX for linear and the smoothness of cubic) 
 
     print('t for plot:', t, t.shape)
     x = X.evaluate(t).squeeze(0)
