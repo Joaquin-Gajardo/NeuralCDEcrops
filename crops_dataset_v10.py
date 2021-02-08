@@ -302,11 +302,11 @@ def build_data_path(coeffs, times, interpolation_method):
 
     elif interpolation_method == 'linear':
         X = torchcde.LinearInterpolation(coeffs, t=times)
-        cdeint_options = dict(grid_points=X.grid_points, eps=1e-5)
+        cdeint_options = dict(jump_t=X.grid_points)
 
     elif interpolation_method == 'rectilinear': # rectifilinear doesn't work when passing time argument
         X = torchcde.LinearInterpolation(coeffs)
-        cdeint_options = dict(grid_points=X.grid_points, eps=1e-5)
+        cdeint_options = dict(jump_t=X.grid_points)
 
     elif interpolation_method == 'SEkernel':
         X = quadratic_kernel_interpolation.QuadraticKernelInterpolation(coeffs=coeffs, t=times)
@@ -422,7 +422,7 @@ class NeuralCDE(torch.nn.Module):
 
         if self.seminorm:
             adjoint_options = cdeint_options.copy()
-            adjoint_options['norm'] = make_norm(z0)
+            adjoint_options['norm'] = 'seminorm'
         else:
             adjoint_options = {}
 
