@@ -486,7 +486,8 @@ class NeuralCDE_stacked(torch.nn.Module):
             adjoint_options2['norm'] = 'seminorm'
         else:
             adjoint_options2 = {}
-        z_t = torchcde.cdeint(X=Z, z0=z0_, func=self.func2, t=Z.interval, options=cdeint_options2, adjoint_options=adjoint_options2, rtol=self.rtol, atol=self.atol)
+        adjoint_params = tuple(self.func1.parameters()) + (z_coeffs,)
+        z_t = torchcde.cdeint(X=Z, z0=z0_, func=self.func2, t=Z.interval, options=cdeint_options2, adjoint_options=adjoint_options2, adjoint_params=adjoint_params, rtol=self.rtol, atol=self.atol)
 
         # Both z0 and z_T are returned from cdeint, extract just last value
         z_T = z_t[:, -1]
