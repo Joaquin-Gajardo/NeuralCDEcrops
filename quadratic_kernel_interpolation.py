@@ -109,13 +109,8 @@ class QuadraticKernelInterpolation(torch.nn.Module):
         """
         super(QuadraticKernelInterpolation, self).__init__(**kwargs)
 
-        #self._t = t
-        #self._coeffs = coeffs
-
-        torchcde.misc.register_computed_parameter(self, '_t', t)
-        torchcde.misc.register_computed_parameter(self, '_coeffs', coeffs)
-        #misc.register_computed_parameter(self, '_derivs', derivs)
-        #self._reparameterise = reparameterise
+        self.register_buffer('_t', t)
+        self.register_buffer('_coeffs', coeffs)
 
     @property
     def grid_points(self):
