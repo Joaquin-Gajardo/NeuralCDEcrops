@@ -869,25 +869,25 @@ def parse_args():
     parser.add_argument("--intensity", default=True, action="store_true", help='Äctivate for using appending observational mask for every channel as extra features [default=%(default)s].')
     parser.add_argument("--time_default", default=False, action="store_true", help='To not pass the original dataset timestamps to the interpolation and model and use the default equally spaced time array of torchde interpolation methods [default=%(default)s].')
     parser.add_argument("--interpol_method", type=str, default='linear', choices=['cubic', 'linear', 'rectilinear', 'SEkernel'], help='Interpolation method to use for creating continous data path X [default=%(default)s].')
-    parser.add_argument("--ntrain", type=int, default=100, help='Number of train samples [default=%(default)s].')
-    parser.add_argument("--nval", type=int, default=100, help='Number of validation samples [default=%(default)s].')
-    parser.add_argument("--max_epochs", type=int, default=1, help='Maximum number of epochs [default=%(default)s].')
+    parser.add_argument("--ntrain", type=int, default=None, help='Number of train samples [default=%(default)s].')
+    parser.add_argument("--nval", type=int, default=None, help='Number of validation samples [default=%(default)s].')
+    parser.add_argument("--max_epochs", type=int, default=50, help='Maximum number of epochs [default=%(default)s].')
     parser.add_argument("--lr", type=float, default=0.001, nargs='*', help='Optimizer initial learning rate [default=%(default)s].')
     parser.add_argument("--BS", type=int, default=512, nargs='*', help='Batch size for train, validation and test sets [default=%(default)s].')
     parser.add_argument("--num_workers", type=int, default=0, help='Num workers for dataloaders [default=%(default)s].')
-    parser.add_argument("--HC", type=int, default=8, nargs='*', help='Hidden channels. Size of the hidden state in NCDE or RNN models [default=%(default)s].')
+    parser.add_argument("--HC", type=int, default=64, nargs='*', help='Hidden channels. Size of the hidden state in NCDE or RNN models [default=%(default)s].')
     parser.add_argument("--HL", type=int, default=1, nargs='*', help='Number of hidden layers in the vector field or of RNN layers if an RNN model is selected [default=%(default)s].')
     parser.add_argument("--HU", type=int, default=128, nargs='*', help='Number of hidden units in the vector field [default=%(default)s].')
     parser.add_argument("--activation", type=str, default='relu', choices=['relu', 'celu'],  help='Intermediate activation function in vector field of NCDE (final one is always tanh) [default=%(default)s].')
     parser.add_argument("--layer_norm", default=False, action="store_true", help='Apply layer norm to before every activation function [default=%(default)s].')
     parser.add_argument("--ES_patience", type=int, default=3, help='Early stopping number of epochs to wait before stopping [default=%(default)s].')
-    parser.add_argument("--lr_decay", default=False, action="store_true", help='Add learning rate decay if when no improvement of training accuracy [default=%(default)s].')
+    parser.add_argument("--lr_decay", default=True, action="store_true", help='Add learning rate decay if when no improvement of training accuracy [default=%(default)s].')
     parser.add_argument("--lr_decay_factor", type=float, default=0.1, nargs='*', help='Learning rate decay factor [default=%(default)s].')
     parser.add_argument("--regularization", type=float, default=None, help='If not None adds L2 regularization to the loss function with scaling specified by the argument [default=%(default)s].')
     parser.add_argument("--pin_memory", default=False, action="store_true", help='Pass pin memory option to torch.utils.data.DataLoader [default=%(default)s].')
     parser.add_argument("--save", type=str, default='results', help='Name of new or existing folder where to save results [default=%(default)s].')
     parser.add_argument("--resume", default=None, help='ID of experiment for resuming training. If None runs a new experiment [default=%(default)s].')
-    parser.add_argument("--logwandb", default=False, action='store_true', help='Log the run in weights and biases [default=%(default)s].')		
+    parser.add_argument("--no_logwandb", default=False, action='store_true', help='Log the run in weights and biases [default=%(default)s].')		
     parser.add_argument("--fast_dataloader", default=False, action='store_true', help='Try out fast dataloader (with shuffle=False) [default=%(default)s].')		
     parser.add_argument("--grad_clip", type=float, default=None, help='Max norm to clip gradients to [default=%(default)s].')		
     parser.add_argument("--model", type=str, default='ncde', choices=['ncde', 'ncde_stacked', 'odernn', 'rnn', 'gru', 'lstm'], help='Model to use [default=%(default)s].')
@@ -935,7 +935,7 @@ def main(args):
     pin_memory = args_dict['pin_memory']
     results_folder = args_dict['save']
     checkpoint_expID = args_dict['resume']
-    logwandb = args_dict['logwandb']
+    logwandb = not args_dict['no_logwandb']
     fast_loader = args_dict['fast_dataloader']
     grad_clip = args_dict['grad_clip']
     use_model = args_dict['model']
@@ -947,7 +947,7 @@ def main(args):
     # Logger
     script_name = __file__.split('/')[-1].split('.')[0]
     if logwandb:
-        wandb.init(config=args_dict, project='testing_cpu_perclass', save_code=True, group='Swisscrop')
+        wandb.init(config=args_dict, project='swisscrop_gpu', save_code=True, group='Swisscrop')
         expID = wandb.run.id
         wandb.run.name = expID
         wandb.run.save()
