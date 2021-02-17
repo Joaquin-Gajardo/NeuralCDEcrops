@@ -3,8 +3,8 @@ Created on Thu  Feb 11 2020
 @author: jgajardo
 Code structure and snippets borrowed from Patrick Kridger and Nando Metzger. Dataset provided by Ozgur Turgoklu.
 Versions:
-v1: 11.02.2021. Child of crops_dataset_v10.py with following differences: modify get_data, get_interpolation_coeffs and plot_interpolation_coeffs functions, defining num of output classes, loss function (and softmax in models), dataloader, compute_total_matches, compute_f1_score and compute_confusion_matrix functions, removed plotting confusion matrix, added CL argument time_downsample_factor and handle batch edge case in train loop.
-
+v1: 11.02.2021. -Child of crops_dataset_v10.py with following differences: modify get_data, get_interpolation_coeffs and plot_interpolation_coeffs functions, defining num of output classes, loss function (and softmax in models), dataloader, compute_total_matches, compute_f1_score and compute_confusion_matrix functions, removed plotting confusion matrix, added CL argument time_downsample_factor and handle batch edge case in train loop.
+                -17.02. Removed downsampling for SwisscropDataset class and moved it to preprocessing plus renaming of coeffs and results files to consider it.
 """
 
 ###  Import libraries
@@ -56,7 +56,7 @@ warnings.filterwarnings("ignore")
 ################################################################################################
 
 # Get processed data from TUM dataset (TODO add script with Nando's code of data processing!)
-def get_data(absolute_data_directory_path, ntrain=None, nval=None, use_model='ncde', intensity=True):
+def get_data(absolute_data_directory_path, ntrain=None, nval=None, use_model='ncde', intensity=True, time_downsample_factor=1):
     # Read dataset  
     timestamps = h5py.File(os.path.join(absolute_data_directory_path, 'raw_dates.hdf5'), 'r')
     swisscrop = h5py.File(os.path.join(absolute_data_directory_path, f'ncde_zuericrop_dataset.hdf5'), 'r')
@@ -72,6 +72,11 @@ def get_data(absolute_data_directory_path, ntrain=None, nval=None, use_model='nc
     data['data'] = data['data'][:ntrain]
     data['mask'] = data['mask'][:ntrain]
     data['labels'] = data['labels'][:ntrain]
+
+    # Downsampling in time dimension
+    data['times'] = data['times'][0::time_downsample_factor]
+    data['data'] = data['data'][..., 0::time_downsample_factor, :]
+    data['mask'] = data['mask'][..., 0::time_downsample_factor]
 
     # Normalize data per channel
     data['data'] = data['data'] * 1e4 # renormalize to original reflectance values
@@ -188,13 +193,14 @@ def get_zeros_rate(data_tensor):
     return missing_rate
 
 
-def get_interpolation_coeffs(directory, data, times, use_noskip, reduced, interpolation_method='cubic'):
+def get_interpolation_coeffs(directory, data, times, interpolation_method='cubic', time_downsample_factor=1):
     # Create new folder for storing coefficients as datasets (interpolation is expensive)
     if not os.path.exists(directory):
         os.mkdir(directory)
     # Dataset name
     timing = 'eqspaced' if times is None else 'irrspaced' # quick naming fix. TODO: if another equally spaced time series timestamps is in times it wouldn't name it properly...
-    coeffs_filename = f'{interpolation_method}_coeffs_{timing}.hdf5'
+    tdownsample = f'_tdownsample{time_downsample_factor}' if time_downsample_factor > 1 else ''
+    coeffs_filename = f'{interpolation_method}_coeffs{tdownsample}_{timing}.hdf5'
     absolute_coeffs_filename_path = os.path.join(directory, coeffs_filename)
     
     # Interpolate and save, or load it for use if it exists
@@ -230,7 +236,6 @@ def get_interpolation_coeffs(directory, data, times, use_noskip, reduced, interp
 
     print(f'Interpolation coefficients shape: {coeffs.shape}')
     
-    print()
     return coeffs
 
 
@@ -619,8 +624,8 @@ class SwisscropDataset(torch.utils.data.Dataset): # Edited Ozgur's original Data
 
         X = self.X[idx]
         y = self.y[idx]
-
-        X = X[0::self.time_downsample_factor, ...]
+        
+        #X = X[0::self.time_downsample_factor, ...] # in preprocessing otherwise interpolation for ncde will be corrupted
         return X, y.to(dtype=torch.int64)
 
 
@@ -880,7 +885,7 @@ def parse_args():
     parser.add_argument("--HU", type=int, default=128, nargs='*', help='Number of hidden units in the vector field [default=%(default)s].')
     parser.add_argument("--activation", type=str, default='relu', choices=['relu', 'celu'],  help='Intermediate activation function in vector field of NCDE (final one is always tanh) [default=%(default)s].')
     parser.add_argument("--layer_norm", default=False, action="store_true", help='Apply layer norm to before every activation function [default=%(default)s].')
-    parser.add_argument("--ES_patience", type=int, default=3, help='Early stopping number of epochs to wait before stopping [default=%(default)s].')
+    parser.add_argument("--ES_patience", type=int, default=5, help='Early stopping number of epochs to wait before stopping [default=%(default)s].')
     parser.add_argument("--lr_decay", default=True, action="store_true", help='Add learning rate decay if when no improvement of training accuracy [default=%(default)s].')
     parser.add_argument("--lr_decay_factor", type=float, default=0.1, nargs='*', help='Learning rate decay factor [default=%(default)s].')
     parser.add_argument("--regularization", type=float, default=None, help='If not None adds L2 regularization to the loss function with scaling specified by the argument [default=%(default)s].')
@@ -957,12 +962,12 @@ def main(args):
     print(f'Arguments: \n {args_dict}')
 
     # Get data and labels
-    data = get_data(absolute_data_directory_path=absolute_data_directory_path, ntrain=ntrain_samples, nval=nval_samples, use_model=use_model, intensity=intensity)
+    data = get_data(absolute_data_directory_path=absolute_data_directory_path, ntrain=ntrain_samples, nval=nval_samples, use_model=use_model, intensity=intensity, time_downsample_factor=time_downsample_factor)
     times = None if time_default and (use_model == 'ncde' or use_model == 'ncde_stacked') else data['times']
     intensity_str = '_intensity' if intensity else ''
     coeffs_directory = os.path.join(absolute_data_directory_path, f'interpolation_coefficients{intensity_str}')
     if use_model == 'ncde' or use_model == 'ncde_stacked':
-        coefficients = get_interpolation_coeffs(coeffs_directory, data, times, interpolation_method=interpolation_method, use_noskip=noskip, reduced=reduced)
+        coefficients = get_interpolation_coeffs(coeffs_directory, data, times, interpolation_method=interpolation_method, time_downsample_factor=time_downsample_factor)
         fig = plot_interpolation_path(coefficients, times, interpolation_method)
         if logwandb:
             wandb.log({'Interpolation sample': fig})
@@ -1083,7 +1088,7 @@ def main(args):
             batch = tuple(b.to(device) for b in batch)
             batch_data, batch_y = batch # labels are not all 1s and 0s -> Nando leverages this soft labels for training and for accuracy he does with hard labels (argmax)
             
-            if batch_data.shape[0] != batch_size:
+            if batch_data.shape[0] != batch_size: # TODO: check
                 continue
             
             pred_y = model(batch_data, times).squeeze(-1)
@@ -1177,13 +1182,14 @@ def main(args):
     
     # Save output
     timing = 'eqspaced' if times is None or interpolation_method == 'rectilinear' else 'irrspaced'
+    tdownsample = f'_tdownsample{time_downsample_factor}' if time_downsample_factor > 1 else ''
     results_path = os.path.join(here, results_folder)
     if not os.path.exists(results_path):
         os.makedirs(results_path, exist_ok=True)
     n = 0
-    while glob.glob(os.path.join(results_path, f'*results{n}*_{batch_size}BS_{learning_rate}lr_{lr_decay_factor}lrdecay_{hidden_channels}HC_{num_hidden_layers}HL_{hidden_units}HU_{interpolation_method}_{timing}.json')):
+    while glob.glob(os.path.join(results_path, f'*results{n}*_{batch_size}BS_{learning_rate}lr_{lr_decay_factor}lrdecay_{hidden_channels}HC_{num_hidden_layers}HL_{hidden_units}HU_{interpolation_method}_{timing}{tdownsample}.json')):
         n += 1
-    with open(os.path.join(results_path, f'results{n}_{expID}_{batch_size}BS_{learning_rate}lr_{lr_decay_factor}lrdecay_{hidden_channels}HC_{num_hidden_layers}HL_{hidden_units}HU_{interpolation_method}_{timing}.json'), 'w') as f:
+    with open(os.path.join(results_path, f'results{n}_{expID}_{batch_size}BS_{learning_rate}lr_{lr_decay_factor}lrdecay_{hidden_channels}HC_{num_hidden_layers}HL_{hidden_units}HU_{interpolation_method}_{timing}{tdownsample}.json'), 'w') as f:
         json.dump(output, f, cls=_TensorEncoder)
 
 if __name__ == '__main__':
