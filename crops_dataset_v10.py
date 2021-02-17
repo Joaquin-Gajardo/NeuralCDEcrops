@@ -443,7 +443,8 @@ class NeuralCDE_stacked(torch.nn.Module):
         super(NeuralCDE_stacked, self).__init__()
         self.func1 = vector_field1
         self.func2 = vector_field2
-        self.initial = torch.nn.Linear(input_channels, hidden_channels)
+        self.initial1 = torch.nn.Linear(input_channels, hidden_channels)
+        self.initial2 = torch.nn.Linear(hidden_channels, hidden_channels)
         self.readout = torch.nn.Linear(hidden_channels, output_channels)
         self.interpolation_method = interpolation_method
         self.rtol = rtol
@@ -464,7 +465,7 @@ class NeuralCDE_stacked(torch.nn.Module):
 
     def forward(self, coeffs, times):
         X, cdeint_options1 = build_data_path(coeffs, times, self.interpolation_method)
-        z0 = self.initial(X.evaluate(X.interval[0])) # initial hidden state must be a function of the first observation
+        z0 = self.initial1(X.evaluate(X.interval[0])) # initial hidden state must be a function of the first observation
 
         if self.seminorm:
             adjoint_options1 = cdeint_options1.copy()
@@ -479,7 +480,7 @@ class NeuralCDE_stacked(torch.nn.Module):
         # Intepolate output of firt solver and pass to second solver    
         z_coeffs = torchcde.linear_interpolation_coeffs(z_t)
         Z = torchcde.LinearInterpolation(z_coeffs)
-        z0_ = Z.evaluate(Z.interval[0])
+        z0_ = self.initial2(Z.evaluate(Z.interval[0]))
         cdeint_options2 = dict(jump_t=Z.grid_points)
         if self.seminorm:
             adjoint_options2 = cdeint_options2.copy()
