@@ -2,3 +2,4 @@ experiments/
 checkpoints/
 results/
 wandb/
+old-scripts/
